@@ -53,7 +53,7 @@ setwd("YOUR working directory")#!!!!!
 # no_target_in: number of conspecific competitors at the beginning of experiment; no_comp: number of heterospecific competitors at the beginning of experiment;
 # pot: pot ID
 # record: year of 1st record
-dat0<-read.csv("dat_ele.csv")#biomass data
+dat0<-read.csv("biomass.csv")#biomass data
 dat.rec<-read.csv("recruit.csv")#recruit data
 resid_time<-read.csv("resid_time.csv")# residence time
 ```
