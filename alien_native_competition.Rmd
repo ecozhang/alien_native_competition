@@ -1,0 +1,682 @@
+---
+title: "alien_native_competition"
+author: "Zhijie Zhang"
+date: "March 15, 2019"
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 4
+    number_sections: true
+    toc_float:
+      collapsed: no
+      smooth_scroll: no
+---
+Zhijie Zhang and Mark van Kleunen, Common alien plants are more competitive than rare natives but not than common natives, Ecology Letters - ELE-00305-2019.R1.
+
+**Experimental design**: We let 48 pairs of alien and native species to compete with a response surface design (varying total density and frequency). The species are either common or rare in Germany. 
+
+**Main results**:
+  
+1. Competitive outcomes (pot level), When growing together, common aliens had higher biomass (i.e. were more competitive) than rare natives
+2. three determinants of competitive outcomes (individual levels)
+    + Intrinsic growth rates: aliens had higher biomass than natives, and commons had higher biomass than rares.
+    + intraspecific competition: aliens experienced higher intraspecific competition than natives. This is mainly driven by the strong intraspecific compeition of common aliens.
+    + interspecific competition: there is a weak trend that aliens experienced weaker interspecific competition than natives.\
+
+
+
+**Methods**:
+
+1. Competitive outcomes. First summarize the difference in total biomass between alien and native species in bi-culture for each combination (pair). Then analyze the associations between competitive outcome and status & commonness.
+2. Three determinants. First parameterize the competitive coefficients (lambda & alpha) for each species per combination, and then analyze the associations between parameters and status & commonness.
+
+
+data preparation
+```{r data_preparation_individual,results=F,warning=FALSE,message=FALSE}
+knitr::opts_chunk$set(warning = FALSE,message = FALSE)
+library(xlsx)
+library(lme4)
+library(dplyr)
+library(r2glmm)
+library(knitr)
+setwd("D:/0_phd/experiment/01response_surface/final_exp/data")
+# metadata
+# spp_target: species of target species; spp_comp: species of competitor species;
+# biomass: aboveground biomass of target species, mg as the unit; 
+# comb: combinition (species pair) ID;
+# status: status of target species, alien or native;
+# common: commonness of target species, common or rare; common_comp: commonness of competitor species;
+# family: family of target species; family_comp: family of competitor species;
+# density: total density at the end of growing season; freq: frequence of target species at the end of growing season;
+# density_in: total density at the beginning of experiment; freq_in: frequence of target species at the beginning of experiment;
+# no_target: number of conspecific competitors (e.g. if there are n individuals of target species, no_target = n-1) in the pot at he end of growing season; no_comp: number of heterospecific competitors at the end of growing season;
+# no_target_in: number of conspecific competitors at the beginning of experiment; no_comp: number of heterospecific competitors at the beginning of experiment;
+# pot: pot ID
+# record: year of 1st record
+dat0<-read.csv("dat_ele.csv")#biomass data
+dat.rec<-read.csv("recruit.csv")#recruit data
+resid_time<-read.csv("resid_time.csv")# residence time
+```
+
+
+
+# competitive outcome
+compare the biomass of alien and native in bi-culture\
+Note that, after tranforming the data, "target species" is always the alien, and "competitor species" is always the native
+```{r data_preparation}
+#calculate total biomass per pot per species
+dat0<-dat0[!is.na(dat0$biomass),]
+dat_mean<-dat0 %>%
+  group_by(pot,spp_target,common,common_comp,status,spp_comp,family,family_comp,comb,freq_in,density_in,freq,density) %>%
+  summarise(tb = sum(biomass))
+# exclude mono, calculate log alien/native
+alien_mean<-dat_mean%>%
+  filter(status=="alien",freq_in!=1)
+native_mean<-dat_mean%>%
+  filter(status=="native",freq_in!=1)%>%
+  ungroup()%>%
+  dplyr::select(pot,tb)
+# combine native and alien total biomass by pot,
+# note that "target species" is always the alien, and "competitor species" is always the native
+dat_diff<-inner_join(alien_mean,native_mean,by=c("pot"))
+  
+
+dat_diff<-dat_diff%>%
+  mutate(tb_diff=log(tb.x/tb.y))
+
+
+```
+
+
+## table
+```{r ,warning=F,message=F}
+# informations
+table.diff<-distinct(dat_diff[,2:9])
+# data to calculate
+table.diff$value<-0
+table.diff$se<-0
+table.diff$df<-0
+for (i in 1:length(table.diff$comb)){
+  dat.i<-filter(dat_diff,comb==table.diff$comb[i])
+  m.i<-lm(tb_diff~1,data=dat.i)
+  r.i<-summary(m.i)
+  table.diff$value[i]<-r.i$coefficients[1]
+  table.diff$se[i]<-r.i$coefficients[2]
+  table.diff$df[i]<-nrow(dat.i)-1
+}
+
+
+#models
+#full model
+m.diff_r1<-lmer(value~common*common_comp+(1|family/spp_target)+(1|family_comp/spp_comp),
+                      weights = 1/(se^2*df),#variance
+                      data=table.diff)
+
+
+# without 2ways
+m.diff_r2<-update(m.diff_r1,.~.-common:common_comp)
+
+m.diff_r3<-lmer(value~-1+(1|family/spp_target)+(1|family_comp/spp_comp),
+                      weights = 1/(se^2*df),
+                      data=table.diff)
+
+#2-way
+res.diff_r1<-drop1(m.diff_r1,test="Chisq")[-1,]
+#main
+res.diff_r2<-drop1(m.diff_r2,test="Chisq")
+#intercept, i.e. global differences between alien and natives
+res.diff_r3<-anova(m.diff_r3,update(m.diff_r2,.~.-common-common_comp))[-1,]
+
+rownames(res.diff_r2)[1]<-"intercept"
+res.diff_r2$Df[1]<-1
+res.diff_r2$AIC[1]<-NA
+res.diff_r2$LRT[1]<-res.diff_r3$Chisq
+res.diff_r2$`Pr(Chi)`[1]<-res.diff_r3$`Pr(>Chisq)`
+
+#table
+rbind(res.diff_r2,res.diff_r1)%>%
+  kable(caption="effect size ~ commonness of alien* commonness of native",digits=3)
+
+cat("variation explained by fixed effects")
+r2beta(m.diff_r1)
+
+```
+
+## add residence time
+```{r,message=F,warning=F}
+table.diff.resid<-table.diff%>%
+  left_join(resid_time,by=c("spp_target"="Species"))
+m.diff_r1<-lmer(value~record+common*common_comp+(1|family/spp_target)+(1|family_comp/spp_comp),
+                      weights = 1/(se^2*df),
+                      data=table.diff.resid)
+
+m.diff_r2<-update(m.diff_r1,.~.-common_comp:common)
+m.diff_r3<-update(m.diff_r2,.~.-common_comp-common)
+
+#2-way
+res.diff_r1<-drop1(m.diff_r1,test="Chisq")[-c(1:2),]
+#main
+res.diff_r2<-drop1(m.diff_r2,test="Chisq")[-c(1:2),]
+#covariate
+res.diff_r3<-drop1(m.diff_r3,test="Chisq")[-1,]
+
+cat("difference in residence time between common and rare aliens")
+kruskal.test(resid_time$record,resid_time$Commonness)
+
+
+rbind(res.diff_r3,res.diff_r2,res.diff_r1)%>%
+  kable(caption="effect size ~ commonness of alien* commonness of native",digits=3)
+
+
+cat("variation explained by fixed effects")
+r2beta(m.diff_r1)
+```
+
+## figure 4
+positive y means alien had higher biomass in competition
+```{r,message=F,fig.width=6,fig.height=3}
+
+#prepare
+t.diff<-as.data.frame(coef(summary(lmer(value~common_comp:common-1+(1|family/spp_target)+(1|family_comp/spp_comp),weights = 1/(se^2),data=table.diff))))
+colnames(t.diff)[1:2]<-c("mean","se")
+#for bar
+x<-c(0.5,1.5,2.8,3.8)
+
+# plot
+
+
+par(mar=c(3,4,1,1))
+plot(x+0.2,t.diff$mean,ylim=c(-1.6,3.5),xlim=c(0,4.6),pch=19,xaxt="n",yaxt="n",
+     ylab="Competitive outcome (lnRR)",xlab="",cex.lab=0.8)
+
+arrows(x+0.2,t.diff$mean+1.96*t.diff$se,x+0.2,t.diff$mean-1.96*t.diff$se,angle=90,code=3,length=0,lwd=2,col="azure4")
+points(x+0.2,t.diff$mean,ylim=c(-1.6,3.5),xlim=c(0,4),pch=19,cex=1)
+axis(1,at=x+0.25,labels=c("Common alien vs
+                     common native","Common alien vs
+                     rare native","Rare alien vs
+                     common native","Rare alien vs
+                     rare native"
+),cex.axis=0.5)
+axis(2,at=c(-1,0,1,2,3),labels = c(-1,0,1,2,3),las=2,cex.axis=0.7)
+abline(h=0,lty=2, col="azure4",cex=1.5)#y=0
+legend("topleft","Aliens win",bty="n",cex=0.7)
+legend("bottomleft","Natives win",bty="n",cex=0.7)
+text(1.7,3.3,"*")
+
+```
+
+
+# three determinants
+first get parameters for each combination with Ricker model, then analyze the parameters\
+
+## fit lambda and alpha for species per combination
+```{r fit}
+table.alien<-as.data.frame(matrix(,0,6))
+table.native<-as.data.frame(matrix(,0,6))
+
+for (i in 1:48){
+  # data of pair i
+  dat.i<-subset(dat0,comb==i)
+  # data of all native/alien individuals in pair i
+  native.i<-subset(dat.i,status=="native")
+  alien.i<-subset(dat.i,status=="alien")
+  # fit the ricker model
+  m.native.i<-lmer(log(biomass)~no_target+no_comp+(1|pot),data=native.i)
+  m.alien.i<-lmer(log(biomass)~no_target+no_comp+(1|pot),data=alien.i)
+  s.native.i<-summary(m.native.i)
+  s.alien.i<-summary(m.alien.i)
+  # extract the data
+  table.alien<-rbind(table.alien,cbind(s.alien.i$coefficient,i))
+  table.native<-rbind(table.native,cbind(s.native.i$coefficient,i))
+}
+
+t.par<-as.data.frame(rbind(table.alien,table.native))
+
+t.par$status<-rep(c("alien","native"),each=nrow(t.par)/2)
+t.par$par<-rep(c("intercept","alphaii","alphaij"),nrow(t.par)/3)
+#get common rare species info
+dat_par<-dat0%>%
+  dplyr::select(status,common,common_comp,family,family_comp,spp_target,spp_comp,pot,comb)%>%
+  distinct()%>%
+  group_by(status,common,common_comp,family,family_comp,spp_target,spp_comp,comb)%>%
+  summarise(df=n()-3)%>%# degree of freedom
+  right_join(t.par,by=c("comb"="i","status"="status"))%>%
+  rename("se"="Std. Error")
+dat_par$comb<-factor(dat_par$comb)
+dat.lambda<-subset(dat_par,par=="intercept")
+dat.ii<-subset(dat_par,par=="alphaii")
+dat.ij<-subset(dat_par,par=="alphaij")
+
+```
+
+## lambda or alpha~ status *commonness
+
+### table
+```{r ricker_2step}
+# analyze
+## lambda
+m.lambda<-lmer(Estimate~status*common+(1|family/spp_target)+(1|comb),
+               weights = 1/(se^2*df),
+               data=dat.lambda)
+
+m.lambda_r2<-update(m.lambda,.~.-status:common)
+## ii
+m.ii<-lmer(Estimate~status*common+(1|family/spp_target)+(1|comb),
+           weights = 1/(se^2*df),
+           data=dat.ii)
+m.ii_r2<-update(m.ii,.~.-status:common)
+## ij
+m.ij<-lmer(Estimate~status*common*common_comp+(1|family/spp_target)+(1|family_comp/spp_comp)+(1|comb),
+           weights = 1/(se^2*df),
+           control=lmerControl(optimizer ='bobyqa', optCtrl=list(maxfun=500000)),
+           data=dat.ij)
+m.ij_r2<-update(m.ij,.~.-status:common:common_comp)
+m.ij_r3<-lmer(Estimate~status+common+common_comp+(1|family/spp_target)+(1|family_comp/spp_comp)+(1|comb),
+              weights = 1/(se^2*df),
+              control=lmerControl(optimizer ='bobyqa', optCtrl=list(maxfun=500000)),
+              data=dat.ij)
+
+# drop1
+# lambda
+lam_r1<-drop1(m.lambda,test="Chisq")[-1,]
+lam_r2<-drop1(m.lambda_r2,test="Chisq")[-1,]
+
+#ii
+ii_r1<-drop1(m.ii,test="Chisq")[-1,]
+ii_r2<-drop1(m.ii_r2,test="Chisq")[-1,]
+
+#ij
+ij_r1<-drop1(m.ij,test="Chisq")[-1,]
+#2way
+ij_r2<-drop1(m.ij_r2,,test="Chisq")[-1,]
+#main
+ij_r3<-drop1(m.ij_r3,,test="Chisq")[-1,]
+
+
+rbind(lam_r2,lam_r1)%>%
+  kable(caption="lambda",digit=3)
+
+rbind(ii_r2,ii_r1)%>%
+  kable(caption="alphaii",digit=3)
+
+rbind(ij_r3,ij_r2,ij_r1)%>%
+  kable(caption="alphaij",digit=3)
+
+
+```
+
+```{r}
+cat("variations explained by fixed effects")
+r2beta(m.lambda,method='sgv')
+r2beta(m.ii,method='sgv')
+r2beta(m.ij,method='sgv')
+```
+
+### figure 3
+```{r prepare}
+#lambda, unit as mg
+lambda<-as.data.frame(coef(summary(lmer(Estimate~common:status-1+(1|family/spp_target)+(1|comb),
+               weights = 1/(se^2*df),
+               data=dat.lambda))))
+names(lambda)[1:2]<-c("mean","se")
+
+#alphaii
+alphaii_sp<-aggregate(-Estimate~common+status+spp_target+family,data=dat.ii,FUN=mean)
+colnames(alphaii_sp)[5]<-"mean"
+alphaii<-as.data.frame(coef(summary(lmer(-Estimate~common:status-1+(1|family/spp_target)+(1|comb),
+               weights = 1/(se^2*df),
+               data=dat.ii))))
+names(alphaii)[1:2]<-c("mean","se")
+
+# alphaij
+alphaij<-as.data.frame(coef(summary(lmer(-Estimate~common:status-1+(1|family/spp_target)+(1|comb),
+               weights = 1/(se^2*df),
+               data=dat.ij))))
+names(alphaij)[1:2]<-c("mean","se")
+```
+
+
+```{r,fig_3,fig.width=8,fig.height=2.5}
+
+par(mfrow=c(1,3),mar=c(3,5,3,2))
+#fig settings
+
+#lambda
+#status:common
+lambda$col<-c("black","white","black","white")
+#for error bar
+x<-c(0.5,0.6,1,1.1)
+x1<-c(0.55,1.05)
+#for bar
+plot(x,lambda$mean,ylim=c(3.6,7.5),xlim=c(0.3,1.3),pch=19,xaxt="n",yaxt="n",
+     ylab=expression(paste("Intrinsic growth rate (ln",lambda["i"],")")),xlab="",cex.lab=1.2,cex=0)
+
+arrows(x,lambda$mean+1.96*lambda$se,x,lambda$mean-1.96*lambda$se,angle=90,code=3,length=0,lwd=2,col="azure4")
+points(x,lambda$mean,cex=1,pch=21,bg=lambda$col)
+axis(1,at=x1,labels=c("Alien","Native"),cex.axis=1)
+axis(2,at=c(4,5,6,7),labels =c(4,5,6,7),las=2,cex.axis=1)
+legend("topright",c("Common","Rare"),pch=21,pt.bg=c("black","white"),bty="n",cex=1)
+legend("topleft","a",bty="n")
+
+
+#alpha figures
+
+
+#ii
+#common:status
+alphaii$col<-c("black","white","black","white")
+#for error bar
+x<-c(0.5,0.6,1,1.1)
+x1<-c(0.55,1.05)
+#for bar
+plot(x,alphaii$mean,ylim=c(0,0.11),xlim=c(0.3,1.3),pch=19,xaxt="n",yaxt="n",
+     ylab=expression(paste("Intraspecific competition (",alpha["ii"],")")),xlab="",cex.lab=1.2,cex=0)
+
+
+arrows(x,alphaii$mean+1.96*alphaii$se,x,alphaii$mean-1.96*alphaii$se,angle=90,code=3,length=0,lwd=2,col="azure4")
+points(x,alphaii$mean,cex=1,pch=21,bg=alphaii$col)
+axis(1,at=x1,labels=c("Alien","Native"),cex.axis=1)
+axis(2,at=c(0,0.03,0.06,0.09),labels =c(0,0.03,0.06,0.09),las=2,cex.axis=1)
+legend("topleft","b",bty="n")
+
+
+
+#ij
+alphaij$col<-c("black","white","black","white")
+#for error bar
+x<-c(0.5,0.6,1,1.1)
+x1<-c(0.55,1.05)
+#for bar
+plot(x,alphaij$mean,ylim=c(-0.005,0.105),xlim=c(0.3,1.3),pch=19,xaxt="n",yaxt="n",
+     ylab=expression(paste("Interspecific competition (",alpha["ij"],")")),xlab="",cex.lab=1.2,cex=0)
+
+arrows(x,alphaij$mean+1.96*alphaij$se,x,alphaij$mean-1.96*alphaij$se,angle=90,code=3,length=0,lwd=2,col="azure4")
+points(x,alphaij$mean,cex=1,pch=21,bg=alphaij$col)
+axis(1,at=x1,labels=c("Alien","Native"),cex.axis=1)
+axis(2,at=c(0,0.03,0.06,0.09),labels =c(0,0.03,0.06,0.09),las=2,cex.axis=1)
+legend("topleft","c",bty="n")
+
+```
+
+## intra vs inter (Appendix S3)
+### table
+```{r niche_difference}
+t.par.alpha<-full_join(dat.ii,dat.ij,by=c("common_comp","common","comb","family_comp","family","status","spp_target","spp_comp"))
+t.par.alpha<-t.par.alpha%>%
+  mutate(diff=-Estimate.x+Estimate.y)%>%#difference between intra and inter, positive values indicate higher intracompetition
+  mutate(se=se.x+se.y)
+
+m.intra.inter<-lmer(diff~status*common*common_comp+(1|family/spp_target)+(1|family_comp/spp_comp)+(1|comb),
+                    weights = 1/(se.x^2*df.x+se.y^2*df.y),
+                    data=t.par.alpha)
+#2-way
+m.intra.inter_r2<-update(m.intra.inter,.~.-status:common:common_comp)
+#main effect
+m.intra.inter_r3<-update(m.intra.inter_r2,.~status+common+common_comp+(1|family/spp_target)+(1|family_comp/spp_comp)+(1|comb))
+#intercept,whether intra larger than inter
+m.intra.inter_r4<-update(m.intra.inter_r3,.~1+(1|family/spp_target)+(1|family_comp/spp_comp)+(1|comb))
+m.intra.inter_r5<-lmer(diff~-1+(1|family/spp_target)+(1|family_comp/spp_comp)+(1|comb),
+                    weights = 1/(se.x^2*df.x+se.y^2*df.y),
+                    data=t.par.alpha)
+#LRT results
+#3way
+rbind(drop1(m.intra.inter_r3,test="Chisq")[-1,],
+      drop1(m.intra.inter_r2,test="Chisq")[-1,],
+      drop1(m.intra.inter,test="Chisq")[-1,])%>%
+  kable(digits=3)
+#intercept
+cat("intercept")
+anova(m.intra.inter_r4,m.intra.inter_r5)%>%
+  kable(digits=3)
+r2beta(m.intra.inter)
+```
+
+### figure S6
+```{r nd_fig,fig.width=8,fig.height=2.5}
+par(mfrow=c(1,3),mar=c(3,5,3,2))
+diff_ij<-as.data.frame(coef(summary(lmer(diff~common:status-1+(1|family/spp_target)+(1|comb),
+                                             weights = 1/(se.x^2*df.x+se.y^2*df.y),
+                                             data=t.par.alpha))))
+names(diff_ij)[1:2]<-c("mean","se")
+diff_ij$col<-c("black","white","black","white")
+plot(x,diff_ij$mean,ylim=c(-0.04,0.075),xlim=c(0.3,1.3),pch=19,xaxt="n",yaxt="n",
+     ylab=expression(paste("Niche difference (",alpha["dif_ij"],")")),xlab="",cex.lab=1.3,cex=0)
+# barplot(t.diff$mean[,1],width=1,space=x2,ylim=c(-0.4,2.4),
+#         ylab="ln(alien/native)",col=c("white","grey"),
+#         lwd=1.5,cex.lab=1.8,cex.axis = 1.5)
+
+arrows(x,diff_ij$mean+1.96*diff_ij$se,x,diff_ij$mean-1.96*diff_ij$se,angle=90,code=3,
+       length=0,lwd=2,col="azure4")
+points(x,diff_ij$mean,cex=1.4,pch=21,bg=diff_ij$col)
+axis(1,at=x1,labels=c("Alien","Native"),cex.axis=1.5)
+axis(2,at=c(-0.03,0,0.03,0.06,0.09),labels =c(-0.03,0.00,0.03,0.06,0.09),las=2,cex.axis=1.2)
+legend("topright",c("Common","Rare"),pch=21,pt.bg=c("black","white"),bty="n",cex=1)
+abline(h=0,lty=2,cex=1.5,col="azure4")
+
+```
+
+
+# recruit~biomass association (Appendix S1)
+I proved that biomass is a good indicator for recruits, which means that the coefficients fitted with biomass data were reliable.\
+A total of 553 data points\
+Data are from 8 spp.\
+a) 3 common aliens: *Bidens frondosa,Galinsoga parviflora, and Eragrostis minor*;\
+b) 3 common natives: *Vulpia myuros, Vulpia bromoides, and Bidens tripartita*;\
+c) 2 rare natives: *Bromus japonicus, and Tragus racemosus*;\
+d) no rare natives.\
+
+```{r}
+#data preparation, total biomass per sp per pot
+dat.tb<-aggregate(biomass~spp_target+pot,data = dat0,FUN="sum")
+dat.rec<-dat.rec%>%
+  filter(!is.na(recruit),recruit!=0)%>%
+  left_join(dat.tb,by=c("spp_target","pot"))
+```
+
+## table
+```{r,warning=F}
+dat.bio.rec<-dat.rec%>%
+  filter(!is.na(biomass))
+m.rec<-lmer(log(recruit)~common+status+log(biomass):(common+status)+log(biomass)+(1|family/spp_target)+(1|comb),
+           data=dat.bio.rec)
+r2beta(m.rec)
+r1<-drop1(m.rec,test="Chisq")[-1,]
+rec_r2<-update(m.rec,.~.-log(biomass):(common+status))
+r2<-drop1(rec_r2,test="Chisq")[-c(1,4),]
+rec_r3<-update(rec_r2,.~.-common-status)
+r3<-drop1(rec_r3,test="Chisq")[-1,]
+rbind(r3,r2,r1)%>%
+  kable(caption="ln(recuit)~ln(biomass):(common+status)",digit=3)
+
+
+```
+
+## figure S2
+```{r}
+newdat<-expand.grid(recruit=0,
+                    spp_target=unique(dat.bio.rec$spp_target),
+                    family=unique(dat.bio.rec$family),
+                    biomass=seq(min(dat.bio.rec$biomass),max(dat.bio.rec$biomass),length=100))%>%
+  filter(!(family=="Poa"&spp_target%in%c("Bid.fro","Gal.par","Bid.tri")))%>%
+  filter(!(family=="Comp"&spp_target%in%c("Vul.bro","Vul.myu","Era.min","Tra.rac","Bro.jap")))
+
+mm<-model.matrix(terms(rec_r3),newdat)
+newdat$recruit<-mm%*%fixef(rec_r3) #predict(m,newdat,re.form=NA) would give the same results
+pvar1 <- diag(mm %*% tcrossprod(vcov(rec_r3),mm))
+tvar1 <- pvar1+VarCorr(rec_r3)$comb[1]+ VarCorr(rec_r3)$'spp_target:family'[1]+
+  VarCorr(rec_r3)$'family'[1]
+## must be adapted for more complex models
+
+newdat <- data.frame(
+  newdat
+  , plo = newdat$recruit-1.96*sqrt(pvar1)
+  , phi = newdat$recruit+1.96*sqrt(pvar1)
+  , tlo = newdat$recruit-1.96*sqrt(tvar1)
+  , thi = newdat$recruit+1.96*sqrt(tvar1)
+)
+
+
+plot(log(recruit)~log(biomass),dat.bio.rec,cex=0.6,col="grey")
+lines(log(newdat$biomass),newdat$recruit,col="black",lty=1,lwd=2)
+lines(log(newdat$biomass),newdat$plo,col="black",lty=2,lwd=1)
+lines(log(newdat$biomass),newdat$phi,col="black",lty=2,lwd=1)
+
+
+```
+
+# fitness differece (Appendix S2)
+A method adpated from Saavedra et al 2017 ecol mon\
+```{r}
+#functions
+#vector defining the centroid of the feasibility domain
+r_centroid <- function(alpha){
+  n <- nrow(alpha)
+  D <- diag(1/sqrt(diag(t(alpha)%*%alpha)))
+  alpha_n <- alpha %*% D
+  r_c <- rowSums(alpha_n) /n 
+  r_c <- t(t(r_c))
+  return(r_c)
+}
+```
+
+
+## calculation
+```{r,warning=F,message=F}
+fit_niche<-data.frame(matrix(,48,11))
+#order the t.par2 according to common_rare categoried
+#this is fro categorizing the plots
+dat_par_order<-dat_par%>%
+  arrange(status,common,common_comp,spp_target)
+comb_uniq<-unique(dat_par_order$comb)
+
+names(fit_niche)<-c("common_A","common_N","fam_A","fam_N","spp_A","spp_N","comb",
+                    "angle","v_angle","r_diff","v_r")
+for (i in 1:48){
+  dat.i<-filter(dat_par_order,comb==comb_uniq[i])
+  #if we say native is sp1, alien is sp2,
+  #p.i: alpha11, alpha21, alpha12,alpha22
+  p.i<-(-dat.i[c(5,3,6,2),10])
+  alpha.i<-matrix(p.i$Estimate,2,2)#alpha matrix
+  r.i<-dat.i[c(4,1),10]#intrinsic vector
+  centroid.i<-r_centroid(alpha.i)#centroid of niche difference dormain
+  vector_base<-matrix(c(1,1),2,1)#vector [1,1]
+  # angle from vector [1,1] to centroid, negative if counterclockwise, i.e. alien is less sensitive 
+  angle.i<-atan2(det(matrix(c(vector_base,centroid.i),2,2)),sum(vector_base*centroid.i))
+  #change the sign of angle.i, so that a positive value indicates that alien is less sensitive, and thus more competitive.
+  angle.i<--angle.i
+  fit_niche[i,8]<-angle.i
+    #infomation
+  for (j in 1:7){
+    fit_niche[i,j]<-as.character(dat.i[1,j+1])
+  }
+  fit_niche[i,9]<-sum(dat.i$se[c(-1,-4)]^2*dat.i$df[c(-1,-4)])#variances for alphas
+  fit_niche[i,10]<-r.i$Estimate[2]-r.i$Estimate[1]#r_diff, postive if r alien is lager
+  fit_niche[i,11]<-sum(dat.i$se[c(1,4)]^2*dat.i$df[c(1,4)])#variances for lambdas
+}
+```
+
+## demographic difference
+Same with intrinsic growth rates
+```{r demo}
+m_dem<-lmer(r_diff~common_A*common_N+(1|fam_A/spp_A)+(1|fam_N/spp_N),
+            weights = 1/(v_r),
+               data=fit_niche)
+m_dem_r2<-update(m_dem,.~.-common_A:common_N)
+m_dem_r3<-update(m_dem_r2,.~.-common_A:common_N)
+m_dem_r4<-lmer(r_diff~-1+(1|fam_A/spp_A)+(1|fam_N/spp_N),
+            weights = 1/(v_r),
+               data=fit_niche)
+r1<-drop1(m_dem,test="Chisq")[-1,]
+r2<-drop1(m_dem_r2,test="Chisq")
+r3<-anova(m_dem_r4,m_dem_r3)
+rownames(r2)[1]<-"intercept"
+r2$Df[1]<-1
+r2$AIC[1]<-NA
+r2$LRT[1]<-r3$Chisq[2]
+r2$`Pr(Chi)`[1]<-r3$`Pr(>Chisq)`[2]
+rbind(r2,r1)%>%
+  kable(digits=3)
+
+```
+
+## difference in sensitivity to competition
+```{r}
+m_comp<-lmer(angle~common_A*common_N+(1|fam_A/spp_A)+(1|fam_N/spp_N),
+            weights = 1/(v_angle),
+               data=fit_niche)
+m_comp_r2<-update(m_comp,.~.-common_A:common_N)
+m_comp_r3<-update(m_comp_r2,.~.-common_A:common_N)
+m_comp_r4<-lmer(angle~-1+(1|fam_A/spp_A)+(1|fam_N/spp_N),
+            weights = 1/(v_angle),
+               data=fit_niche)
+r1<-drop1(m_comp,test="Chisq")[-1,]
+r2<-drop1(m_comp_r2,test="Chisq")
+r3<-anova(m_comp_r4,m_comp_r3)
+rownames(r2)[1]<-"intercept"
+r2$Df[1]<-1
+r2$AIC[1]<-NA
+r2$LRT[1]<-r3$Chisq[2]
+r2$`Pr(Chi)`[1]<-r3$`Pr(>Chisq)`[2]
+rbind(r2,r1)%>%
+  kable(digits=3)
+r2beta(m_comp)
+r2beta(m_dem)
+```
+
+
+
+## figure S5
+```{r,fig.width=11,fig.height=5}
+#figure
+par(mfrow=c(1,2),mar=c(5,5,1,2))
+#demographic difference
+dem.diff<-as.data.frame(coef(summary(lmer(r_diff~common_N:common_A-1+(1|fam_A/spp_A)+(1|fam_N/spp_N),
+            weights = 1/(v_r),
+               data=fit_niche))))
+
+colnames(dem.diff)[1:2]<-c("mean","se")
+
+#for bar
+x<-c(0.5,1.5,2.8,3.8)
+plot(x+0.2,dem.diff$mean,ylim=c(-1.7,4),xlim=c(0,4.6),pch=19,xaxt="n",yaxt="n",
+     ylab="Demographic difference",xlab="",cex.lab=1.2)
+
+arrows(x+0.2,dem.diff$mean+1.96*dem.diff$se,x+0.2,dem.diff$mean-1.96*dem.diff$se,angle=90,code=3,length=0,lwd=2,col="azure4")
+points(x+0.2,dem.diff$mean,ylim=c(-1.6,3.5),xlim=c(0,4),pch=21,bg="black",cex=1)
+axis(1,at=x+0.25,labels=c("Common alien vs
+                     common native","Common alien vs
+                     rare native","Rare alien vs
+                     common native","Rare alien vs
+                     rare native"
+),cex.axis=0.54)
+axis(2,at=c(-1,0,1,2,3),labels = c(-1,0,1,2,3),las=2)
+abline(h=0,lty=2, col="azure4",cex=1.5)
+legend("topleft","Aliens more productive",bty="n")
+legend("bottomleft","Natives more productive",bty="n")
+text(1.7,3.3,"*")
+
+## sensitivity
+comp.diff<-as.data.frame(coef(summary(lmer(angle~common_N:common_A-1+(1|fam_A/spp_A)+(1|fam_N/spp_N),
+            weights = 1/(v_angle),
+               data=fit_niche))))
+
+colnames(comp.diff)[1:2]<-c("mean","se")
+
+plot(x+0.2,comp.diff$mean,ylim=c(-0.95,0.95),xlim=c(0,4.6),pch=19,xaxt="n",yaxt="n",
+     ylab="Difference in sensitivity to competion",xlab="",cex.lab=1.2)
+
+arrows(x+0.2,comp.diff$mean+1.96*comp.diff$se,x+0.2,comp.diff$mean-1.96*comp.diff$se,angle=90,code=3,length=0,lwd=2,col="azure4")
+points(x+0.2,comp.diff$mean,ylim=c(-0.95,0.95),xlim=c(0,4),pch=21,bg="black",cex=1)
+axis(1,at=x+0.25,labels=c("Common alien vs
+                     common native","Common alien vs
+                     rare native","Rare alien vs
+                     common native","Rare alien vs
+                     rare native"
+),cex.axis=0.4)
+axis(2,at=c(-0.9,-0.6,-0.3,0,0.3,0.6,0.9),labels = c(-0.9,-0.6,-0.3,0,0.3,0.6,0.9),las=2)
+abline(h=0,lty=2, col="azure4",cex=1.5)
+legend("topleft","Aliens less sensitive to comptition",bty="n")
+legend("bottomleft","Natives less sensitive",bty="n")
+
+```
