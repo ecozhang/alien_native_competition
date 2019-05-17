@@ -35,12 +35,11 @@ Zhijie Zhang and Mark van Kleunen, Common alien plants are more competitive than
 data preparation
 ```{r data_preparation_individual,results=F,warning=FALSE,message=FALSE}
 knitr::opts_chunk$set(warning = FALSE,message = FALSE)
-library(xlsx)
 library(lme4)
 library(dplyr)
 library(r2glmm)
 library(knitr)
-setwd("D:/0_phd/experiment/01response_surface/final_exp/data")
+setwd("YOUR working directory")#!!!!!
 # metadata
 # spp_target: species of target species; spp_comp: species of competitor species;
 # biomass: aboveground biomass of target species, mg as the unit; 
