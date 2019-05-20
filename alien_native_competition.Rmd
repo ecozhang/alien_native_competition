@@ -54,7 +54,7 @@ setwd("YOUR working directory")#!!!!!
 # pot: pot ID
 # record: year of 1st record
 dat0<-read.csv("biomass.csv")#biomass data
-dat.rec<-read.csv("recruit.csv")#recruit data
+dat_rec<-read.csv("recruit.csv")#recruit data
 resid_time<-read.csv("resid_time.csv")# residence time
 ```
 
@@ -468,17 +468,17 @@ d) no rare natives.\
 ```{r}
 #data preparation, total biomass per sp per pot
 dat.tb<-aggregate(biomass~spp_target+pot,data = dat0,FUN="sum")
-dat.rec<-dat.rec%>%
+dat_rec<-dat_rec%>%
   filter(!is.na(recruit),recruit!=0)%>%
   left_join(dat.tb,by=c("spp_target","pot"))
 ```
 
 ## table
 ```{r,warning=F}
-dat.bio.rec<-dat.rec%>%
+dat_bio_rec<-dat_rec%>%
   filter(!is.na(biomass))
 m.rec<-lmer(log(recruit)~common+status+log(biomass):(common+status)+log(biomass)+(1|family/spp_target)+(1|comb),
-           data=dat.bio.rec)
+           data=dat_bio_rec)
 r2beta(m.rec)
 r1<-drop1(m.rec,test="Chisq")[-1,]
 rec_r2<-update(m.rec,.~.-log(biomass):(common+status))
@@ -494,9 +494,9 @@ rbind(r3,r2,r1)%>%
 ## figure S2
 ```{r}
 newdat<-expand.grid(recruit=0,
-                    spp_target=unique(dat.bio.rec$spp_target),
-                    family=unique(dat.bio.rec$family),
-                    biomass=seq(min(dat.bio.rec$biomass),max(dat.bio.rec$biomass),length=100))%>%
+                    spp_target=unique(dat_bio_rec$spp_target),
+                    family=unique(dat_bio_rec$family),
+                    biomass=seq(min(dat_bio_rec$biomass),max(dat_bio_rec$biomass),length=100))%>%
   filter(!(family=="Poa"&spp_target%in%c("Bid.fro","Gal.par","Bid.tri")))%>%
   filter(!(family=="Comp"&spp_target%in%c("Vul.bro","Vul.myu","Era.min","Tra.rac","Bro.jap")))
 
@@ -516,7 +516,7 @@ newdat <- data.frame(
 )
 
 
-plot(log(recruit)~log(biomass),dat.bio.rec,cex=0.6,col="grey")
+plot(log(recruit)~log(biomass),dat_bio_rec,cex=0.6,col="grey")
 lines(log(newdat$biomass),newdat$recruit,col="black",lty=1,lwd=2)
 lines(log(newdat$biomass),newdat$plo,col="black",lty=2,lwd=1)
 lines(log(newdat$biomass),newdat$phi,col="black",lty=2,lwd=1)
