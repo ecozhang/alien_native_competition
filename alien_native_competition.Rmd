@@ -249,7 +249,7 @@ dat.ij<-subset(dat_par,par=="alphaij")
 
 ```
 
-## lambda or alpha~ status *commonness
+## lambda or alpha~ status:commonness
 
 ### table
 ```{r ricker_2step}
