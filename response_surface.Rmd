@@ -1,0 +1,1695 @@
+---
+title: "response_surface"
+author: "zz"
+date: "September 19, 2018"
+
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 4
+    number_sections: true
+    toc_float:
+      collapsed: no
+      smooth_scroll: no
+---
+
+**Main results**:\
+Pot level (competitive outcome)\
+1-1) When competing with aliens, common natives had higher biomass than rare natives. \
+1-2) When competing with natives, common aliens were likely to have higher biomas than rare aliens.\
+1-3) When growing together, aliens had higher biomass than (i.e. outcompete) rare natives
+\
+Individual level (changes in response to competition)\
+2-1) Without competition, aliens had higher biomass than natives, and commons had higher biomass than rares.\
+2-2) Aliens experienced higher intraspecific competition than natives. This is mainly driven by the strong intraspecific compeition of common aliens.\
+2-3) Aliens were likely to experience weaker interspecific competition.\
+\
+Biomass is positive related with number of recruits. Therefore, our results for biomass is good.\
+
+Main results are shown in sections 1& 2.\
+Section 1 is the results of competitive outcome (pot level, or say community level), and section 2 the competitive coefficients (individual level). \
+Section 3 proved that biomass could represent population growth, so that results of section 2 are reliable.\
+Section 4 showed assocation between coefficients and traits.\
+
+I tried both **one-step** and **two-step** method. Overall, The results are similar.\
+The two-step method as it is more straightforward.\
+
+**two-step method**: \
+1) The pot level analysis. First summarize the difference in total biomass between alien and native species in bi-culture for each combination (i.e. competitive outcome). Then analyze the associations between competitive outcome and status & commonness.\
+2) The individual level analysis. First parameterize the competitive coefficients (lambda & alpha) for each species per combinations, and then analyze the associations between parameters and status & commonness.\
+**one-step method**: \
+analyze all species jointly.\
+**attention**\
+One "rare alien", Cotula Coronopifolia, is a salt marsh plant, excluding it only slightly affected the effect of commonness of aliens in competitive outcome \
+
+
+```{r data_preparation_individual,results=F,warning=FALSE,message=FALSE}
+#load packages and data preparation
+library(optimx)
+library(xlsx)
+library(lme4)
+library(lmerTest)
+library(effects)
+library(lattice)
+library(dplyr)
+require(mvtnorm)
+library(nlme)
+library(ggfortify)
+library(knitr)
+setwd("D:/0_phd/experiment/01response_surface/final_exp/data")
+# no_target/comp in dat0 are final number\
+# no_target_in in dat0 are initial number\
+# no_target/comp in dat_death are initial number\
+
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  library(grid)
+  
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+  
+  numPlots = length(plots)
+  
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                     ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+  
+  if (numPlots==1) {
+    print(plots[[1]])
+    
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+    
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+      
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+
+
+dat<-read.csv("raw.csv")
+#label file
+lab<-read.xlsx("label_23_6_17.xlsx",1)
+#lab<-read.delim("clipboard")#in case read.xlsx not work
+lab<-subset(lab,year=="1st")
+data<-merge(dat,lab,by=c("comb","no"))
+#calculate the final density
+density<-data%>%
+  filter(!is.na(biomass))%>%
+  count(comb,no)
+
+n_alien<-data%>%
+  filter(!is.na(biomass),status=="alien")%>%
+  count(comb,no)
+##add 4 rows, of which all plants were dead
+density[957:960,]<-matrix(c(4,10,13,25,
+                            "9_3_1","19_2_18","19_1_18","9_6_3",
+                            0,0,0,0))
+colnames(density)[3]<-"density"
+colnames(n_alien)[3]<-"n_alien"
+density$density<-as.numeric(density$density)
+#add total density
+dat.01<-merge(data,density,by=c("comb","no"))
+#add density of aliens
+dat.02<-merge(dat.01,n_alien,by=c("comb","no"),all.x=T)
+dat.02$n_alien[is.na(dat.02$n_alien)]<-0
+
+dat.02$n_native<-dat.02$density-dat.02$n_alien
+dat1<-dat.02
+
+
+#get final density and frequency of each species
+for (i in 1:nrow(dat1)){
+  if (dat1$status[i]=="alien"){
+    dat1$freq[i]<-dat1$n_alien[i]/dat1$density[i]
+    dat1$spp_target[i]<-paste(dat1$alien[i])
+    dat1$spp_comp[i]<-paste(dat1$native[i])
+  } else {
+    dat1$freq[i]<-dat1$n_native[i]/dat1$density[i]
+    dat1$spp_target[i]<-paste(dat1$native[i])
+    dat1$spp_comp[i]<-paste(dat1$alien[i])
+  }
+}
+dat0<-dat1
+
+#Bid.con was replaced by Gal.par in the experiment, so change it.
+levels(dat0$alien)[levels(dat0$alien)=="Bid.con"]<-"Gal.par"
+dat0$spp_target[(dat0$spp_target)=="Bid.con"]<-"Gal.par"
+dat0$spp_comp[(dat0$spp_comp)=="Bid.con"]<-"Gal.par"
+#all the species information for target and competitor
+sp_info<-read.csv("species.csv")
+levels(sp_info$spp)[1]<-"Gal.par"
+dat0<-merge(dat0,sp_info,by.y="spp",by.x="spp_comp")
+colnames(dat0)[20:21]<-c("family_comp","common_comp")
+dat0<-merge(dat0,sp_info,by.y="spp",by.x="spp_target")
+#change to factors
+dat0$pot<-paste(dat0$comb,dat0$no,sep="_")
+dat0$spp_target<-as.factor(dat0$spp_target)
+dat0$spp_comp<-as.factor(dat0$spp_comp)
+dat0$pot<-as.factor(dat0$pot)
+
+#
+#one pot is right, so I changed it
+dat0$wrong[dat0$pot=="13_2_7_20"]<-""
+#correct the inital density and frequency
+for (i in 1:nrow(dat0)){
+  if (dat0$wrong[i]=="add"){
+    dat0$density_in[i]<-dat0$density[i]
+    dat0$freq_in[i]<-dat0$freq[i]
+  } else if (dat0$status[i]=="alien"){
+    dat0$density_in[i]<-dat0$density_old[i]
+    dat0$freq_in[i]<-dat0$prop_old[i]
+  } else {
+    dat0$density_in[i]<-dat0$density_old[i]
+    dat0$freq_in[i]<-1-dat0$prop_old[i]
+  }
+}
+#wrong pot,i.e. mistakes during transplant, change it
+dat0$density_in[dat0$no=="7_9_16"]<-8
+dat0$freq_in[dat0$no=="7_9_16"&dat0$status=="alien"]<-0.75
+dat0$freq_in[dat0$no=="7_9_16"&dat0$status=="native"]<-0.25
+#get target and competitor number
+#use target number=target -1, for ricker model
+dat0$no_target[dat0$status=="alien"]<-dat0$n_alien[dat0$status=="alien"]-1
+dat0$no_target[dat0$status=="native"]<-dat0$n_native[dat0$status=="native"]-1
+dat0$no_comp[dat0$status=="alien"]<-dat0$n_native[dat0$status=="alien"]
+dat0$no_comp[dat0$status=="native"]<-dat0$n_alien[dat0$status=="native"]
+dat0$no_target_in<-dat0$density_in*dat0$freq_in-1
+dat0$no_comp_in<-dat0$density_in*(1-dat0$freq_in)
+dat_1st<-dat0
+dat0<-dat0[!is.na(dat0$biomass),]
+
+```
+
+```{r data exploration,include=F,warning=F}
+histogram(~log(biomass),data=dat0,breaks=20,xlab="log ab")
+xyplot(log(biomass) ~(no_target), data = dat0,
+       type = c("p"), 
+       xlim = c(0,20),  pch=19,
+       panel = function (...){
+         panel.xyplot(...)
+         panel.grid(..., h = -1, v = -1)
+         panel.loess(...,span=0.8)},
+       xlab="no._target",ylab="biomass")
+
+xyplot(log(biomass) ~(no_comp), data = dat0,
+       type = c("p"), 
+       xlim = c(0,20),  pch=19,
+       panel = function (...){
+         panel.xyplot(...)
+         panel.grid(..., h = -1, v = -1)
+         panel.loess(...,span=0.8)},
+       xlab="no._comp",ylab="biomass")
+
+```
+
+# biomass, competitive outcome
+pot level analyses\
+compare the biomass of alien and native in bi-culture\
+One-step and two-step method had no significant differences. Therefore, only two-step results shown.
+
+```{r data_preparation}
+#total biomass per pot per species
+dat.mean<-dat0 %>%
+  group_by(pot,spp_target,common,common_comp,status,spp_comp,family,family_comp,comb,freq_in,density_in,freq,density,no) %>%
+  summarise(tb = sum(biomass))%>%#exclude cot.cor which is a salt marsh species
+  filter(spp_comp!="Cot.cor",spp_comp!="Cot.cor")
+# exclude mono, calculate log alien/native
+alien.mean<-dat.mean%>%
+  filter(status=="alien",freq_in!=1)%>%
+  arrange(pot)
+native.mean<-dat.mean%>%
+  filter(status=="native",freq_in!=1)%>%
+  arrange(pot)
+par.native.mean<-native.mean[,c(1,15)]
+dat.diff<-inner_join(alien.mean,par.native.mean,by=c("pot"))
+
+dat.diff<-dat.diff%>%
+  mutate(tb_diff=log(tb.x/tb.y))
+
+
+```
+
+
+```{r pot level,warning=FALSE,eval=F}
+#test the difference in the same pot
+m.diff<-lmer(tb_diff~common*common_comp+
+             (1|family/spp_target)+(1|family_comp/spp_comp),data=dat.diff)
+m.diff_r2<-update(m.diff,.~.-common:common_comp)
+#for intercept
+m.diff_r3<-update(m.diff_r2,.~.-common-common_comp)
+m.diff_r4<-lmer(tb_diff~-1+
+              (1|family/spp_target)+(1|family_comp/spp_comp),data=dat.diff)
+
+
+
+diff_r1<-drop1(m.diff,test="Chisq")[-1,]
+diff_r2<-drop1(m.diff_r2,test="Chisq")
+#intercept
+diff_r3<-anova(m.diff_r3,m.diff_r4)
+rownames(diff_r2)[1]<-"intercept"
+diff_r2$Df[1]<-1
+diff_r2$AIC[1]<-NA
+diff_r2$LRT[1]<-diff_r3$Chisq[2]
+diff_r2$`Pr(Chi)`[1]<-diff_r3$`Pr(>Chisq)`[2]
+
+#table
+rbind(diff_r2,diff_r1)%>%
+  kable(digits=3)
+
+
+```
+
+
+```{r,eval=F}
+#figure
+print("'Common.rare' means common alien-rare native bi-culture")
+boxplot(tb_diff~common+common_comp,data=dat.diff,ylab="log(alien/native)",cex.lab=1.4)
+abline(h=0,lty=2)
+```
+
+
+## table
+
+```{r 2step,warning=F}
+table.diff<-distinct(dat.diff[,2:9])%>%#exclude cot.cor
+  filter(spp_comp!="Cot.cor",spp_target!="Cot.cor")
+colnames(table.diff)[2:3]<-c("common_alien","common_native")
+table.diff$value<-0
+table.diff$se<-0
+table.diff$df<-0
+for (i in 1:length(table.diff$comb)){
+  dat.i<-filter(dat.diff,comb==table.diff$comb[i])
+  m.i<-lm(tb_diff~1,data=dat.i)
+  r.i<-summary(m.i)
+  table.diff$value[i]<-r.i$coefficients[1]
+  table.diff$se[i]<-r.i$coefficients[2]
+  table.diff$df[i]<-nrow(dat.i)-1
+}
+
+#models
+m.diff_2step_r1<-lmer(value~common_alien*common_native+(1|family/spp_target)+(1|family_comp/spp_comp),
+           weights = 1/(se^2),
+           data=table.diff)
+m.diff_2step_r2<-update(m.diff_2step_r1,.~.-common_alien:common_native)
+m.diff_2step_r3<-update(m.diff_2step_r2,.~.-common_alien-common_native)
+m.diff_2step_r4<-lmer(value~-1+(1|family/spp_target)+(1|family_comp/spp_comp),
+           weights = 1/(se^2),
+           data=table.diff)
+
+#2-way
+res.diff_2step_r1<-drop1(m.diff_2step_r1,test="Chisq")[-1,]
+#main
+res.diff_2step_r2<-drop1(m.diff_2step_r2,test="Chisq")
+#intercept, i.e. global differences between alien and natives
+res.diff_2step_r3<-anova(m.diff_2step_r4,m.diff_2step_r3)
+rownames(res.diff_2step_r2)[1]<-"intercept"
+res.diff_2step_r2$Df[1]<-1
+res.diff_2step_r2$AIC[1]<-NA
+res.diff_2step_r2$LRT[1]<-res.diff_2step_r3$Chisq[2]
+res.diff_2step_r2$`Pr(Chi)`[1]<-res.diff_2step_r3$`Pr(>Chisq)`[2]
+
+m.dif.inter<-update(m.diff_2step_r3,.~.+common_alien:common_native-1)
+print("95% CI of effect size for each category, common alien vs rare native is significant. Rare alien vs rare native is marginally siginificant")
+summary(m.dif.inter)$coefficients%>%
+  kable(caption="effect size for each category",digit=3)
+#table
+rbind(res.diff_2step_r2,res.diff_2step_r1)%>%
+  kable(caption="effect size ~ commonness of alien* commonness of native",digits=3)
+
+```
+
+## figure
+When growing together, aliens had higher biomass than rare natives\
+When competing with natives, common aliens were likely to perform better than rare aliens did.\
+When competing with aliens, common natives performed better than rare natives did
+positive y means alien had higher biomass in competition
+```{r}
+
+#figure
+t.diff<-aggregate(value~common_native+common_alien,data=table.diff,FUN=function(x)c(mean=mean(x),se=sd(x)/sqrt(length(x))))
+colnames(t.diff)[3]<-"mean"
+
+#for error bar
+x<-c(0.5,1.5,3.5,4.5)
+#for bar
+x2<-c(0,0,1,0)
+x3<-c(1,4)
+barplot(t.diff$mean[,1],width=1,space=x2,ylim=c(-0.4,2.4),
+        ylab="ln(alien/native)",col=c("white","grey"),
+        lwd=1.5,cex.lab=1.8,cex.axis = 1.5)
+legend("topright",c("Common_native","Rare_native"),fil=c("white","grey"),bty="n",cex=1.2)
+arrows(x,t.diff$mean[,1]+t.diff$mean[,2],x,t.diff$mean[,1]-t.diff$mean[,2],angle=90,code=3,length=0.1,lwd=1.5)
+axis(1,at=x3,labels=c("Common_alien","Rare alien"),cex.axis=1.5,tick=F)
+
+```
+
+
+
+# biomass, ricker, two-step
+first get parameters for each combination, then analyze the pars\
+The differences in results between two-step and one-step methods:\
+1) One-step found a significant status:no_comp effect, two-step found a nonsignificant (p=0.128) tendency.\
+2) One-step found a significant common_comp, two-step found a nonsignificant (p=0.355) tendency. However, it is hard to see the effect from figures
+
+##fit lambda and alpha for species per combination
+```{r fit}
+table.alien<-as.data.frame(matrix(,0,6))
+table.native<-as.data.frame(matrix(,0,6))
+
+
+for (i in 1:48){
+  dat.i<-subset(dat0,comb==i)
+  if (nrow(dat.i)!=0){
+    native.i<-subset(dat.i,status=="native")
+    alien.i<-subset(dat.i,status=="alien")
+    m.native.i<-lmer(log(biomass)~no_target+no_comp+(1|pot),data=native.i)
+    m.alien.i<-lmer(log(biomass)~no_target+no_comp+(1|pot),data=alien.i)
+    #print(plot(m.native.i,xlab=paste(i,".native")))#if export residual figues
+    #print(plot(m.alien.i,,xlab=paste(i,".alien")))
+    s.native.i<-summary(m.native.i)
+    s.alien.i<-summary(m.alien.i)
+    table.alien<-rbind(table.alien,cbind(s.alien.i$coefficient,i))
+    table.native<-rbind(table.native,cbind(s.native.i$coefficient,i))
+  }
+}
+
+t.par<-rbind(table.alien,table.native)
+
+colnames(t.par)[6]<-"comb"
+t.par$status<-rep(c("alien","native"),each=nrow(t.par)/2)
+t.par$par<-rep(c("intercept","alphaii","alphaij"),nrow(t.par)/3)
+#get common rare species info
+t.par2<-merge(t.par,unique(dat0[,c(1,2,3,5,20:23)]),by=c("comb","status"))
+t.par2$comb<-as.factor(t.par2$comb)
+t.par2$status<-as.factor(t.par2$status)
+t.par2$color[t.par2$status=="native"]<-3
+t.par2$color[t.par2$status=="alien"]<-1
+#use the parameters as data to run
+colnames(t.par2)[3:4]<-c("Estimate","se")
+dat.lambda<-subset(t.par2,par=="intercept")
+dat.ii<-subset(t.par2,par=="alphaii")
+dat.ij<-subset(t.par2,par=="alphaij")
+
+```
+
+##lambda alpha~ status *commonness
+
+An interesting finding:\
+Although I assumed that lambda (intrinsic growth rate) and alphaii (intraspecific competition) are not affected by the identity of competitor, I found that identity of competitor 
+(seemed to) affect lambda and alphai if we tested that.\
+Therefore, consistent effects of common:common_comp seems occur in all three parameters.\
+I did some simulation, and found this effect is not likely due to the bias from the method we used to fit parameters. Therefore, such effects might truly occur.\
+This result partly and indirectly reveals that there is a trade off between lambda and alpha (e.g. common species, when competed with rare species, had higher lambda, and higher alpha).
+
+## table
+```{r ricker_2step}
+# analyze
+m.lambda<-lmer(Estimate~status*common+(1|family/spp_target)+(1|comb),
+               weights = 1/(se^2),
+      data=dat.lambda%>%
+        filter(spp_target!="Cot.cor",spp_comp!="Cot.cor"))
+m.lambda_r2<-update(m.lambda,.~.-status:common)
+m.ii<-lmer(Estimate~status*common+(1|family/spp_target)+(1|comb),
+           weights = 1/(se^2),
+             data=dat.ii%>%
+        filter(spp_target!="Cot.cor",spp_comp!="Cot.cor"))
+m.ii_r2<-update(m.ii,.~.-status:common)
+
+m.ij<-lmer(Estimate~status*common*common_comp+(1|family/spp_target)+(1|family_comp/spp_comp)+(1|comb),
+           weights = 1/(se^2),
+           #control = lmerControl(optimizer= "optimx", optCtrl = list(method="nlminb")),
+           #control = lmerControl(optimizer= "optimx", optCtrl = list(method="L-BFGS-B")),
+           control=lmerControl(optimizer ='bobyqa', optCtrl=list(maxfun=500000)),
+             data=dat.ij%>%
+        filter(spp_target!="Cot.cor",spp_comp!="Cot.cor"))
+
+m.ij_r2<-update(m.ij,.~.-status:common:common_comp)
+m.ij_r3<-lmer(Estimate~status+common+common_comp+(1|family/spp_target)+(1|family_comp/spp_comp)+(1|comb),
+              weights = 1/(se^2),
+              #control = lmerControl(optimizer= "optimx", optCtrl = list(method="nlminb")),
+              #control = lmerControl(optimizer= "optimx", optCtrl = list(method="L-BFGS-B")),
+              control=lmerControl(optimizer ='bobyqa', optCtrl=list(maxfun=500000)),
+              data=dat.ij%>%
+        filter(spp_target!="Cot.cor",spp_comp!="Cot.cor"))
+
+lam_r1<-drop1(m.lambda,test="Chisq")[-1,]
+lam_r2<-drop1(m.lambda_r2,test="Chisq")[-1,]
+ii_r1<-drop1(m.ii,test="Chisq")[-1,]
+ii_r2<-drop1(m.ii_r2,test="Chisq")[-1,]
+ij_r1<-drop1(m.ij,test="Chisq")[-1,]
+ij_r2<-drop1(m.ij_r2,test="Chisq")[-1,]
+ij_r3<-drop1(m.ij_r3,test="Chisq")[-1,]
+rbind(lam_r2,lam_r1)%>%
+  kable(caption="lambda",digit=3)
+rbind(ii_r2,ii_r1)%>%
+  kable(caption="alphaii",digit=3)
+
+rbind(ij_r3,ij_r2,ij_r1)%>%
+  kable(caption="alphaij",digit=3)
+
+```
+
+## figures
+```{r prepare}
+#lambda
+#unit as g
+
+lambda1<-aggregate(exp(Estimate)/1000~status+common+spp_target+family,data=dat.lambda%>%
+                     filter(spp_target!="Cot.cor",spp_comp!="Cot.cor"),FUN=mean)
+colnames(lambda1)[5]<-"mean"
+lambda<-aggregate(mean~common+status,data=lambda1,FUN=function(x)c(mean=mean(x),se=sd(x)/sqrt(length(x))))
+lambda_com_com<-aggregate(exp(Estimate)/1000~common_comp+common,data=dat.lambda,FUN=function(x)c(mean=mean(x),se=sd(x)/sqrt(length(x))))
+colnames(lambda_com_com)[3]<-"mean"
+#alphaii
+
+alphaii_sp<-aggregate(-Estimate~common+status+spp_target+family,data=dat.ii%>%
+                      filter(spp_target!="Cot.cor",spp_comp!="Cot.cor"),FUN=mean)
+colnames(alphaii_sp)[5]<-"mean"
+#common:status
+alphaii<-aggregate(mean~common+status,data=alphaii_sp,FUN=function(x)c(mean=mean(x),se=sd(x)/sqrt(length(x))))
+#common
+alphaii_com<-aggregate(mean~common,data=alphaii_sp,FUN=function(x)c(mean=mean(x),se=sd(x)/sqrt(length(x))))
+#common:common_comp
+alphaii_com_com<-aggregate(-Estimate~common_comp+common,data=dat.ii%>%
+                      filter(spp_target!="Cot.cor",spp_comp!="Cot.cor"),FUN=function(x)c(mean=mean(x),se=sd(x)/sqrt(length(x))))
+colnames(alphaii_com_com)[3]<-"mean"
+
+#alphaij
+#ij is for each combination, so a bit different with ii and lambda
+dat.ij_fig<-dat.ij%>%
+  filter(spp_target!="Cot.cor",spp_comp!="Cot.cor")
+
+dat.ij_status<-dat.ij_fig%>%
+  group_by(spp_comp,status)%>%
+  summarise(mean=mean(-Estimate))
+
+dat.ij_common<-dat.ij_fig%>%
+  group_by(spp_comp,common_comp)%>%
+  summarise(mean=mean(-Estimate))
+
+#status
+alphaij<-aggregate(mean~status,data=dat.ij_status,FUN=function(x)c(mean=mean(x),se=sd(x)/sqrt(length(x))))
+#common
+alphaij2<-aggregate(mean~common_comp,data=dat.ij_common,FUN=function(x)c(mean=mean(x),se=sd(x)/sqrt(length(x))))
+#common+common_comp
+alphaij_com_com<-aggregate(-Estimate~common_comp+common,data=dat.ij_fig,
+                           FUN=function(x)c(mean=mean(x),se=sd(x)/sqrt(length(x))))
+
+colnames(alphaij)[2]<-"mean"
+colnames(alphaij2)[2]<-"mean"
+colnames(alphaij_com_com)[3]<-"mean"
+
+
+
+
+```
+
+**lambda figure**\
+status\*,\
+Same with Dawson 2012\
+Ensure aliens to quickly recover after disturbance (find citation in Case 2000)
+
+commonness\*\
+
+```{r lambda_figure,fig.width=8,fig.height=4}
+par(mfrow=c(1,3),lwd=1.5,mar=c(3,5,3,4))
+#fig settings
+#for error bar
+x<-c(0.5,1.5,3.5,4.5)
+#for bar
+x2<-c(0,0,1,0)
+x3<-c(1,4)
+#
+#lambda
+#status:common
+barplot(lambda$mean[,1],width=1,space=x2,ylim=c(0,1.2),
+        ylab="Biomass without competition",col=c("white","grey"),
+        lwd=1.5,cex.lab=1.8,cex.axis = 1.5)
+legend("topright",c("Common","Rare"),fil=c("white","grey"),bty="n",cex=1.2)
+arrows(x,lambda$mean[,1]+lambda$mean[,2],x,lambda$mean[,1]-lambda$mean[,2],angle=90,code=3,length=0.1,lwd=1.5)
+axis(1,at=x3,labels=c("Alien","Native"),cex.axis=1.5,tick=F)
+# #common:common_comp
+# barplot(lambda_com_com$mean[,1],width=1,space=x2,ylim=c(0,1.2),
+#         ylab="Biomass without competition",col=c("white","grey"),
+#         lwd=1.5,cex.lab=1.8,cex.axis = 1.5)
+# legend("topright",c("Common_c","Rare_c"),fil=c("white","grey"),bty="n",cex=1.2)
+# 
+# arrows(x,lambda_com_com$mean[,1]+lambda_com_com$mean[,2],x,lambda_com_com$mean[,1]-lambda_com_com$mean[,2],
+#        angle=90,code=3,length=0.1,lwd=1.5)
+# axis(1,at=x3,labels=c("Common","Rare"),cex.axis=1.5,tick=F)
+```
+
+**alpha figures**\
+
+Common aliens were more self-limited.
+Competition growth tradeoff (Tilman 1982), or say r/k selection. larger size?\
+
+
+
+```{r alphaii_figure,fig.width=8,fig.height=4}
+# Why rare native were strongly self-limited?\
+# This finding contradicts with competition growth tradeoff. Hard to figure out why.\
+# Some other discussion.\
+# First, similar with Yenni 2013&2017\
+# Second, the driver of rarity.
+par(mfrow=c(1,3),lwd=1.5,mar=c(3,5,3,4))
+#alpha figures
+#ii
+#common:status
+barplot(alphaii$mean[,1],width=1,space=x2,ylim=c(0,0.135),
+        ylab="Intraspecific competition coefficient",col=c("white","grey"),
+        lwd=1.5,cex.lab=1.8,cex.axis = 1.5)
+arrows(x,alphaii$mean[,1]+alphaii$mean[,2],x,alphaii$mean[,1]-alphaii$mean[,2],angle=90,code=3,length=0.1)
+#axis(1,at=x,labels=c("c_alien","r_alien","c_native","r_native"),cex.axis=1.2)
+axis(1,at=x3,labels=c("Alien","Native"),cex.axis=1.5,tick=F)
+legend("topright",c("Common","Rare"),fil=c("white","grey"),bty="n",cex=1.2)
+
+# #common:common_comp
+# barplot(alphaii_com_com$mean[,1],width=1,space=x2,ylim=c(0,0.135),
+#         ylab="Intraspecific competition coefficient",col=c("white","grey"),
+#         lwd=1.5,cex.lab=1.8,cex.axis = 1.5)
+# arrows(x,alphaii_com_com$mean[,1]+alphaii_com_com$mean[,2],x,alphaii_com_com$mean[,1]-alphaii_com_com$mean[,2],
+#        angle=90,code=3,length=0.1)
+# #axis(1,at=x,labels=c("c_alien","r_alien","c_native","r_native"),cex.axis=1.2)
+# axis(1,at=x3,labels=c("Common","Rare"),cex.axis=1.5,tick=F)
+# legend("topright",c("Common_c","Rare_c"),fil=c("white","grey"),bty="n",cex=1.2)
+
+
+```
+
+**alphaij figure**\
+a tendency in status, and a very weak tendency in common:common_comp\
+One step method found significant effects of status\*, common_comp\*\
+Why aliens were less limited by natives than native were by aliens?\
+Two reasons: Novel weapon and better responses. Actually, the current experiment could not untangle these two parts, because alien and native were not competed by the same species.\
+Why rare species showed stronger competitive effects than common competitors?\
+I guess species have less evolutionary history with rare species than with commons. Therefore rare species might be novel, such that have stronger competitive effects.
+```{r alphaij_fig,,fig.width=8,fig.height=4}
+par(mfrow=c(1,3),lwd=1.5,mar=c(3,5,3,4))
+#ij
+#status, 2 levels
+barplot(alphaij$mean[,1],width=1,space=c(1,0),ylim=c(0,0.135),
+        ylab="Interspecific competition coefficient",col="white",
+        lwd=1.5,cex.lab=1.8,cex.axis = 1.5)
+arrows(c(0.5,2.5),alphaij$mean[,1]+alphaij$mean[,2],c(0.5,2.5),alphaij$mean[,1]-alphaij$mean[,2],angle=90,code=3,length=0.1)
+axis(1,at=c(0.5,2.5),labels=c("Alien","Native"),cex.axis=1.5,tick=F)
+#axis(1,at=x3,labels=c("Common","Rare"),cex.axis=1.5,tick=F)
+
+
+#common_comp, 2 levels
+barplot(alphaij2$mean[,1],width=1,space=c(1,0),ylim=c(0,0.135),
+        ylab="Interspecific competition coefficient",col="white",
+        lwd=1.5,cex.lab=1.8,cex.axis = 1.5)
+
+arrows(c(0.5,2.5),alphaij2$mean[,1]+alphaij2$mean[,2],c(0.5,2.5),alphaij2$mean[,1]-alphaij2$mean[,2],
+       angle=90,code=3,length=0.1)
+
+axis(1,at=c(0.5,2.5),labels=c("Common
+competitor", "Rare
+competitor"),cex.axis=1.5,tick=F)
+#legend("topright",c("Common_competitor","Rare_competitor"),fil=c("white","grey"),bty="n",cex=1.2)
+
+#common:common_comp, 4levels
+barplot(alphaij_com_com$mean[,1],width=1,space=x2,ylim=c(0,0.135),
+        ylab="Interspecific competition coefficient",col=c("white","grey"),
+        lwd=1.5,cex.lab=1.8,cex.axis = 1.5)
+arrows(x,alphaij_com_com$mean[,1]+alphaij_com_com$mean[,2],x,alphaij_com_com$mean[,1]-alphaij_com_com$mean[,2],
+       angle=90,code=3,length=0.1)
+#axis(1,at=x,labels=c("c_alien","r_alien","c_native","r_native"),cex.axis=1.2)
+axis(1,at=x3,labels=c("Common","Rare"),cex.axis=1.5,tick=F)
+legend("topright",c("Common_c","Rare_c"),fil=c("white","grey"),bty="n",cex=1.2)
+```
+
+
+## intra vs inter (not important)
+(alphaii-alphaij)~status\*common\
+significant effects of status and status:common, same with that of intra.\
+A tendency of common:common_comp effect.\
+Therefore, the intra vs inter (i.e. niche difference) is mainly driven by intra-competition. I did not show the table and figure. Probably no need to discuss it again in main text\
+
+table
+```{r niche_difference,results='hide'}
+t.par.alpha<-full_join(dat.ii,dat.ij,by=c("common_comp","common","comb","family_comp","family","status","spp_target","spp_comp","color"))
+t.par.alpha<-t.par.alpha%>%
+  mutate(diff=-Estimate.x+Estimate.y)%>%#difference between intra and inter, positive values indicate higher intracompetition
+  mutate(se=se.x+se.y)
+
+m.intra.inter<-lmer(diff~status*common*common_comp+(1|family/spp_target)+(1|family_comp/spp_comp)+(1|comb),
+                    weights = 1/(se.x^2+se.y^2),
+                    data=t.par.alpha)
+#2-way
+m.intra.inter_r2<-update(m.intra.inter,.~.-status:common:common_comp)
+#main effect
+m.intra.inter_r3<-update(m.intra.inter_r2,.~.-status:common-status:common_comp-common:common_comp)
+#intercept,whether intra larger than inter
+m.intra.inter_r4<-update(m.intra.inter_r3,.~.-status-common-common_comp)
+m.intra.inter_r5<-lmer(diff~-1+(1|family/spp_target)+(1|family_comp/spp_comp)+(1|comb),
+                       weights = 1/(se.x^2+se.y^2),
+                       data=t.par.alpha)
+#LRT results
+intra.inter_r1<-drop1(m.intra.inter,test="Chisq")[-1,]
+intra.inter_r2<-drop1(m.intra.inter_r2,test="Chisq")[-1,]
+intra.inter_r3<-drop1(m.intra.inter_r3,test="Chisq")
+intra.inter_r4<-anova(m.intra.inter_r4,m.intra.inter_r5)
+#add the intercept results into intra.inter_r3, first row
+intra.inter_r3$LRT[1]<-intra.inter_r4$Chisq[2]
+intra.inter_r3$`Pr(Chi)`[1]<-intra.inter_r4$`Pr(>Chisq)`[2]
+intra.inter_r3$Df[1]<-1
+intra.inter_r3$AIC[1]<-NA
+row.names(intra.inter_r3)[1]<-"Intercept"
+#table for niche difference
+rbind(intra.inter_r3,intra.inter_r2,intra.inter_r1)%>%
+  kable(digits=3)
+```
+
+figure
+status\*, common:status\*, a tendency of common:common_comp
+```{r nd_fig,fig.width=8,fig.height=4,results='hide'}
+par(mfrow=c(1,3),lwd=1.5,mar=c(3,5,3,4))
+diff_status<-aggregate(diff~status,data=t.par.alpha,FUN=function(x)c(mean=mean(x),se=sd(x)/sqrt(length(x))))
+diff_status_com<-aggregate(diff~status+common,data=t.par.alpha,FUN=function(x)c(mean=mean(x),se=sd(x)/sqrt(length(x))))
+diff_com_com<-aggregate(diff~common+common_comp,data=t.par.alpha,FUN=function(x)c(mean=mean(x),se=sd(x)/sqrt(length(x))))
+colnames(diff_status_com)[3]<-"mean"
+colnames(diff_com_com)[3]<-"mean"
+
+#status
+barplot(diff_status$diff[,1],width=1,space=c(1,0),ylim=c(-0.01,0.06),
+        ylab="Intra-inter",col="white",
+        lwd=1.5,cex.lab=1.8,cex.axis = 1.5)
+arrows(c(0.5,2.5),diff_status$diff[,1]+diff_status$diff[,2],c(0.5,2.5),diff_status$diff[,1]-diff_status$diff[,2],
+       angle=90,code=3,length=0.1)
+axis(1,at=c(0.5,2.5),labels=c("Alien","Native"),cex.axis=1.5,tick=F)
+
+#status:common
+barplot(diff_status_com$mean[,1],width=1,space=x2,ylim=c(-0.01,0.06),
+        ylab="Intra-inter",col=c("white","grey"),
+        lwd=1.5,cex.lab=1.8,cex.axis = 1.5)
+arrows(x,diff_status_com$mean[,1]+diff_status_com$mean[,2],x,diff_status_com$mean[,1]-diff_status_com$mean[,2],
+       angle=90,code=3,length=0.1)
+#axis(1,at=x,labels=c("c_alien","r_alien","c_native","r_native"),cex.axis=1.2)
+axis(1,at=x3,labels=c("Alien","Native"),cex.axis=1.5,tick=F)
+legend("topright",c("Common","Rare"),fil=c("white","grey"),bty="n",cex=1.2)
+
+#common:commp
+barplot(diff_com_com$mean[,1],width=1,space=x2,ylim=c(-0.01,0.06),
+        ylab="Intra-inter",col=c("white","grey"),
+        lwd=1.5,cex.lab=1.8,cex.axis = 1.5)
+arrows(x,diff_com_com$mean[,1]+diff_com_com$mean[,2],x,diff_com_com$mean[,1]-diff_com_com$mean[,2],
+       angle=90,code=3,length=0.1)
+#axis(1,at=x,labels=c("c_alien","r_alien","c_native","r_native"),cex.axis=1.2)
+axis(1,at=x3,labels=c("Common","Rare"),cex.axis=1.5,tick=F)
+legend("topright",c("Common_c","Rare_c"),fil=c("white","grey"),bty="n",cex=1.2)
+
+```
+
+
+## fitness and niche differences
+the method from Saavedra et al 2017 ecol mon\
+The problem is that our lambdas are not real reproduction. Because reproduction=a+b:biomass, but we can not get the a and b.\
+so I would not use this method\
+Need to borrow the functions from Saavedra et al 2017 ecol mon.
+```{r FD AND ND,eval=F}
+fit_niche<-data.frame(matrix(,48,10))
+#order the t.par2 according to common_rare categoried
+#this is fro categorizing the plots
+t.par2_order<-t.par2%>%
+  arrange(status,common,common_comp,spp_target)
+comb_uniq<-unique(t.par2_order$comb)
+
+colnames(fit_niche)<-c("ND","spp_A","spp_N","fam_N",
+                       "common_N","fam_A","common_A",
+                       "comb","centroid_x","centroid_y")
+
+
+
+
+
+pdf("nd_fig2.pdf",height = 14,width = 14)
+par(mfrow=c(4,4))
+for (i in 1:48){
+  dat.i<-filter(t.par2_order,comb==comb_uniq[i])
+  #if we say native is sp1, alien is sp2,
+  #p.i: alpha11, alpha12, alpha21,alpha22
+  p.i<--dat.i[c(5,3,6,2),3]
+  #matrix
+  #for figure and centroid, do not need the bound
+  alpha.i<-matrix(p.i,2,2)
+  #intrinsic vector
+  r.i<-dat.i[c(4,1),3]
+  #----------------
+  #niche difference
+  #fit_niche[i,1]<-10^(Omega(alpha.i))*90
+  fit_niche[i,1]<-180/pi*
+    asin((alpha.i[1,1]*alpha.i[2,2]-alpha.i[1,2]*alpha.i[2,1])/(sqrt(alpha.i[1,1]^2+alpha.i[2,1]^2))/sqrt(alpha.i[1,2]^2+alpha.i[2,2]^2))
+  #centroid of niche difference dormain
+  centroid.i<-r_centroid(alpha.i)
+  fit_niche[i,9]<-centroid.i[1]
+  fit_niche[i,10]<-centroid.i[2]
+    #----------------
+    #infomation
+  for (j in 2:7){
+    fit_niche[i,j]<-as.character(dat.i[1,j+7])
+  }
+  fit_niche[i,8]<-as.character(dat.i[1,1])
+  lab<-paste(comb_uniq[i],dat.i$spp_target[1],dat.i$spp_comp[1],sep = "_")
+  #figure
+  fig(alpha.i,centroid.i,lab,r.i)
+}
+dev.off()
+
+```
+
+
+I divided fitness difference (theta) into two parts:
+1. vecter [r_sp1,r_sp2]
+2. centroid of niche difference dormain
+
+As proved, vecter is larger than [1,1], i.e. on average, the angle between vecter and [1,0] is larger than 45 degree.\
+Now I want to proved that the centroid is smaller than or equal to [1,1], such that the kappa is higher in alien species
+```{r}
+for (i in 1:48){
+  a<-c(1,1)#base vector
+  b<-c(fit_niche$centroid_x[i],fit_niche$centroid_y[i])#centroid
+  fit_niche$angle[i]<-atan2(det(matrix(c(a,b),2,2)),a%*%b)#angle, positive if counterclockwise, i.e. centroid more towards aliens
+}
+
+boxplot(angle~common_A+common_N,data=fit_niche)
+m_fit<-lmer(angle~common_A*common_N+(1|fam_A/spp_A)+(1|fam_N/spp_N),data=fit_niche)
+drop1(m_fit,test="Chisq")
+m_fit_r2<-update(m_fit,.~.-common_A:common_N)
+drop1(m_fit_r2,test="Chisq")
+
+```
+
+# recruits
+I proved that biomass is a good indicator for recruits, and then the coefficients fitted with biomass data were reliable.
+A total of 553 data points, from 27 combinations, 8 of which contain both alien and native data (i.e. both species have recruits).\
+Data are from 8 spp.\
+a) 3 common aliens: *Bidens frondosa,Galinsoga parviflora, and Eragrostis minor*;\
+b) 3 common natives: *Vulpia myuros, Vulpia bromoides, and Bidens tripartita*;\
+c) 2 rare natives: *Bromus japonicus, and Tragus racemosus*;\
+d) no rare natives.\
+\
+Here I use two methods to test whether the biomass data could provide a okey predition for recruits.\
+Method 1) recruit~biomass association\
+Back to the Ricker Model, where ln (N_t+1/N_t)=ln(lambda)-no_target\*alpha_ii-no_comp\*alpha_ij.\
+Here, we used biomass (hereafter bio) as a indictor of N_t+1 (no. of recruits). \
+An important assumption, which I proved later: biomass and recruit are linear related, for example. ln(N_t+1)=a+b\*ln(biomass).\
+Then Ricker Model is transformed into: ln(biomass)=[ln(lambda)-a+ln(N_t)]/b-no_target\*(alpha_ii/b)-no_comp\*(alpha_ij/b).\
+As N_t in our analysis is 1, \
+'True' ln(lambda)=a+b\*intercept\
+'True' alpha_ii=b\*alphaii\
+and alpha_ij=b\*alphaij.\
+Therefore, if a and b are not significantly related with status and commonness, the results basing on biomass should be reliable.\
+\
+Method 2) Directly compare the coeffiecients fitted by biomass and those by recruits. However, only intercepts (ln lambda) showed the same results.
+
+\
+data preparation
+```{r}
+#total biomass per sp per pot
+dat.tb<-aggregate(biomass~spp_target+pot,data = dat0,FUN="sum")
+colnames(dat.tb)[3]<-"tb_target"
+dat.rec<-read.csv("recruit.csv")%>%
+  filter(!is.na(recruit),recruit!=0)%>%
+  mutate(pot_p1=paste(comb,no,sep="_"))%>%
+  left_join(dat.tb,by=c("spp_target","pot_p1"="pot"))
+```
+
+## recruit~biomass association
+Recruits in second year are related with biomass in first year (Note that biomass and recruits are not measured on the same plants).\
+one-step method
+```{r,warning=F}
+dat.bio.rec<-dat.rec%>%
+  mutate(biomass=tb_target)%>%
+  filter(!is.na(biomass))
+test<-lmer(log(recruit)~log(biomass):(common+status)+log(biomass)+(1|family/spp_target)+(1|comb),
+           data=dat.bio.rec)
+
+#summary(test)$coefficients%>%kable()
+r1<-drop1(test,test="Chisq")[-1,]
+test_r2<-update(test,.~.-log(biomass):(common+status))
+r2<-drop1(test_r2,test="Chisq")[-1,]
+rbind(r2,r1)%>%
+  kable(caption="ln(recuit)~ln(biomass):(common+status)",digit=3)
+plot(log(dat.bio.rec$biomass),log(dat.bio.rec$recruit))
+abline(a=1.274,b=0.224)
+```
+
+I also used two-step method, and the results are similar, with log(tb_target)
+```{r data_pre}
+t.asso.alien<-t.asso.native<-as.data.frame(matrix(,0,6))
+
+for (i in 1:48){
+  native.i<-dat.bio.rec%>%
+    filter(comb==i,status=="native")
+  alien.i<-dat.bio.rec%>%
+    filter(comb==i,status=="alien")
+  if (nrow(native.i)!=0){
+    m.native.i<-lm(log(recruit)~log(tb_target),data=native.i)
+    s.native.i<-summary(m.native.i)
+    t.asso.native<-rbind(t.asso.native,cbind(s.native.i$coefficients,i,"native"))
+  }
+  if(nrow(alien.i)!=0){
+    m.alien.i<-lm(log(recruit)~log(tb_target),data=alien.i)
+    s.alien.i<-summary(m.alien.i)
+    t.asso.alien<-rbind(t.asso.alien,cbind(s.alien.i$coefficients,i,"alien"))
+  }
+}
+t.asso<-rbind(t.asso.alien,t.asso.native)
+colnames(t.asso)[1:6]<-c("estimate","se","t","p","comb","status")
+t.asso$par<-rep(c("intercept","slope"),nrow(t.asso)/2)
+t.asso$comb<-as.integer(as.character(t.asso$comb))
+t.asso<-t.asso%>%
+  left_join(dat0%>%
+              select(spp_target,spp_comp,comb,status,common,common_comp,family,family_comp)%>%
+              distinct())
+t.asso$estimate<-as.numeric(as.character(t.asso$estimate))
+t.asso$se<-as.numeric(as.character(t.asso$se))
+dat.asso.inter<-t.asso%>%
+  filter(par=="intercept")
+dat.asso.slope<-t.asso%>%
+  filter(par=="slope")
+
+```
+
+```{r,results = 'hide'}
+
+m.asso.inter<-lmer(estimate~1+(1|family/spp_target)+(1|comb)+(1|family_comp/spp_comp),
+                   weights = 1/(se^2),
+                   data=dat.asso.inter)
+
+m.asso.inter.ref<-lmer(estimate~-1+(1|family/spp_target)+(1|comb)+(1|family_comp/spp_comp),
+                       weights = 1/(se^2),
+                   data=dat.asso.inter)
+anova(m.asso.inter,m.asso.inter.ref)%>%kable()
+m.asso.slope<-lmer(estimate~1+(1|family/spp_target)+(1|comb)+(1|family_comp/spp_comp),
+                   weights = 1/(se^2),
+                   data=dat.asso.slope)
+m.asso.slope.ref<-lmer(estimate~-1+(1|family/spp_target)+(1|comb)+(1|family_comp/spp_comp),
+                   weights = 1/(se^2),
+                   data=dat.asso.slope)
+anova(m.asso.slope,m.asso.slope.ref)%>%kable()
+m.asso.inter.dif<-lmer(estimate~status+common+(1|family/spp_target)+(1|comb)+(1|family_comp/spp_comp),
+                   weights = 1/(se^2),
+                   data=dat.asso.inter)
+m.asso.slope.dif<-lmer(estimate~status+common+(1|family/spp_target)+(1|comb)+(1|family_comp/spp_comp),
+                   weights = 1/(se^2),
+                   data=dat.asso.slope)
+drop1(m.asso.inter.dif,test="Chisq")%>%kable(digit=3)
+drop1(m.asso.slope.dif,test="Chisq")%>%kable(digit=3)
+
+```
+
+
+## direct comparison
+compare the results between recruits and biomass\
+Results for lambda showed similar pattern for recruits and biomass.\
+Results for alphaii and alphaij showed different patterns. Biomass data showed higher intraspecific competition  and lowe inerspecific competition in aliens. However, recruit data showed no difference (even a tendency of lower intraspecific competition in aliens)\
+
+```{r}
+t.native.rec<-t.alien.rec<-as.data.frame(matrix(,0,6))
+
+#use lme
+for (i in 1:48){
+  native.i<-dat.rec%>%
+    filter(comb==i,status=="native")
+  alien.i<-dat.rec%>%
+    filter(comb==i,status=="alien")
+  if (nrow(native.i)!=0){
+    m.native.i<-lm(log(recruit/(no_target+1))~no_target+no_comp,data=native.i)
+    s.native.i<-summary(m.native.i)
+    t.native.rec<-rbind(t.native.rec,cbind(s.native.i$coefficients,i,"native"))
+  }
+  if(nrow(alien.i)!=0){
+    m.alien.i<-lm(log(recruit/(no_target+1))~no_target+no_comp,data=alien.i)
+    s.alien.i<-summary(m.alien.i)
+    t.alien.rec<-rbind(t.alien.rec,cbind(s.alien.i$coefficients,i,"alien"))
+  }
+}
+
+t.par.rec<-rbind(t.alien.rec,t.native.rec)
+t.par.rec$par<-rep(c("intercept","alphaii","alphaij"),nrow(t.par.rec)/3)
+colnames(t.par.rec)[1:6]<-c("estimate_rec","se_rec","t_rec","p_rec","comb","status")
+t.par.rec$comb<-as.integer(as.character(t.par.rec$comb))
+t.par.rec$estimate_rec<-as.numeric(as.character(t.par.rec$estimate_rec))
+t.par.rec$se_rec<-as.numeric(as.character(t.par.rec$se_rec))
+
+
+#get common rare species info
+t.par2$comb<-as.integer(as.character(t.par2$comb))
+t.lme.rec<-t.par.rec%>%
+  left_join(dat0%>%
+              select(spp_target,spp_comp,comb,status,common,common_comp,family,family_comp)%>%
+              distinct())%>%
+  left_join(t.par2)
+
+
+```
+```{r analysis_recruit_lambda, eval=F}
+dat.lambda.rec<-t.lme.rec%>%
+  filter(par=="intercept")
+dat.alphaii.rec<-t.lme.rec%>%
+  filter(par=="alphaii")
+dat.alphaij.rec<-t.lme.rec%>%
+  filter(par=="alphaij")
+
+m.lambda.rec<-lmer(estimate_rec~status+common+(1|family/spp_target)+(1|comb),
+               weights = 1/(se_rec^2),
+               data=dat.lambda.rec)
+m.lambda.sub<-lmer(Estimate~status+common+(1|family/spp_target)+(1|comb),
+               weights = 1/(se^2),
+               data=dat.lambda.rec)
+#table for recruit
+drop1(m.lambda.rec,test="Chisq")[-1,]%>%
+  kable()
+#table for biomass, part data
+drop1(m.lambda.sub,test="Chisq")[-1,]%>%
+  kable()
+plot(allEffects(m.lambda.rec))
+plot(allEffects(m.lambda.sub))
+
+```
+```{r recruit_alphaii, eval=F}
+#alpahii
+m.alphaii.rec<-lmer(-estimate_rec~status+common+(1|family/spp_target)+(1|comb),
+               weights = 1/(se_rec^2),
+               data=dat.alphaii.rec)
+m.alphaii.sub<-lmer(-Estimate~status+common+(1|family/spp_target)+(1|comb),
+               weights = 1/(se^2),
+               data=dat.alphaii.rec)
+drop1(m.alphaii.rec,test="Chisq")[-1]%>%
+  kable()
+plot(allEffects(m.alphaii.rec))
+drop1(m.alphaii.sub,test="Chisq")[-1]%>%
+  kable()
+plot(allEffects(m.alphaii.sub))
+```
+
+```{r recruit_alphaij, eval=F}
+m.alphaij.rec<-lmer(-estimate_rec~status+common+common_comp+(1|family/spp_target)+(1|comb)+(1|family_comp/spp_comp),
+               weights = 1/(se_rec^2),
+               data=dat.alphaij.rec)
+m.alphaij.sub<-lmer(-Estimate~status+common+common_comp+(1|family/spp_target)+(1|comb)+(1|family_comp/spp_comp),
+               weights = 1/(se^2),
+               data=dat.alphaij.rec)
+drop1(m.alphaij.rec,test="Chisq")[-1]%>%
+  kable()
+drop1(m.alphaij.sub,test="Chisq")[-1]%>%
+  kable()
+plot(allEffects(m.alphaij.rec))
+plot(allEffects(m.alphaij.sub))
+```
+
+# coefficients~trait
+PC1 (economics spectrum) represents SLA (positive related) and LDMC (negative related, leaf dry matter content).\
+PC2 represents leaf area (positive related).\
+I found that lambda (intrinsic growth rate) was positive related with PC1.\
+Alphaii (intraspecific competition) was positive related with PC2.\
+Alphaij was positive related with PC1 of competitor
+
+```{r}
+sp_status_common<-lambda1%>%
+  select(-mean,-family)
+dat.trait<-read.csv("D:/0_phd/experiment/01response_surface/final_exp/data/traits/trait.csv")%>%
+  filter(species!="Cot.cor")%>%
+  select(-X)%>%
+  left_join(sp_status_common,by=c("species"="spp_target"))%>%
+  mutate(col=if_else(status=="alien"&common=="common","black",
+                     if_else(status=="alien"&common=="rare","grey",
+                             if_else(status=="native"&common=="common","red","orange"))))%>%
+  mutate(cate=paste(common,status,sep="_"))%>%
+  mutate(SLA=as.numeric(scale(log(SLA))),
+         LDMC=as.numeric(scale(log(LDMC))),
+         area=as.numeric(scale(log(area))),
+         height=as.numeric(scale(log(height))),
+         rsr=as.numeric(scale(log(rsr))))#scale
+row.names(dat.trait)<-dat.trait[,1]
+
+
+```
+
+```{r}
+
+#plot
+
+pdf(file="PCA.pdf",width = 15,height = 6)
+p1<-autoplot(prcomp(dat.trait[,2:6]), data = dat.trait, colour = 'cate', 
+         label = TRUE,loadings = TRUE,loadings.label = TRUE,scale = 0)
+
+p2<-autoplot(prcomp(dat.trait[,4:6]), data =dat.trait, colour = 'cate',label = TRUE,loadings = TRUE,loadings.label = TRUE，scale = 0)
+
+multiplot(p1,p2,cols=2)
+dev.off()
+pca<-prcomp(dat.trait[,4:6])
+pca.all<-prcomp(dat.trait[,2:6])
+
+
+```
+
+```{r}
+test<-cbind(dat.trait,pca$x)
+anova(lm(PC1~common*status,data = test))
+anova(lm(PC2~common*status,data = test))
+```
+
+```{r}
+
+#alphaii_sp:alphaii for each spp
+dat.trait<-cbind(dat.trait,pca.all$x)#5 trait or 3 trait?
+dat.trait.lambda<-lambda1%>%
+  inner_join(dat.trait,by=c("spp_target"="species"))%>%
+  mutate(mean=log(mean))
+dat.trait.ii<-alphaii_sp%>%
+  inner_join(dat.trait,by=c("spp_target"="species"))
+dat.trait.ij<-dat.ij%>%
+  mutate(mean=-Estimate)%>%
+  inner_join(dat.trait,by=c("spp_target"="species"))%>%#trait for target
+  inner_join(dat.trait,by=c("spp_comp"="species"))%>%#trait for compeitor
+  mutate(PC1_target=PC1.x,PC2_target=PC2.x,PC1_comp=PC1.y,PC2_comp=PC2.y)
+
+m.trait.lambda<-lmer(mean~PC1+PC2+(1|family),data=dat.trait.lambda)
+m.trait.ii<-lmer(mean~PC1+PC2+(1|family),data=dat.trait.ii)
+m.trait.ij<-lmer(mean~PC1_target+PC2_target+PC1_comp+PC2_comp+(1|family)+(1|family_comp),data=dat.trait.ij)
+drop1(m.trait.lambda,test="Chisq")
+drop1(m.trait.ii,test="Chisq")
+drop1(m.trait.ij,test="Chisq")
+summary(m.trait.lambda)$coefficients%>%
+  kable(caption="lambda~PC1+PC2",digit=3)
+summary(m.trait.ii)$coefficients%>%
+  kable(caption="alphaii~PC1+PC2",digit=3)
+summary(m.trait.ij)$coefficients%>%
+  kable(caption="alphaij~PC1+PC2+PC1_competitor+PC2_competitor",digit=3)
+
+
+```
+
+
+# biomass, one-step
+individual level analysis\
+association with no. of targets and competitors
+
+## ricker model, one step:
+result: table_ricker_bio\
+adding random slope does not make any differences\
+using initial number or final number does not make any (or large?) differences\
+\
+assumptions (the differences between ricker and "normal" model):\
+1) lambda and alpha_ii (intraspecific competition) are detemined by status and commonness of target species, and irrespective of commonness of competitor species\
+2) alpha_ij (interspecific competition coefficients) is determined by both status and commonness of target species, and commonness of competitor species\
+3) no interaction between number of target and number of competitor
+```{r ricker_one_step}
+m.ricker.b<-lmer(log(biomass)~#lambda
+                   status+common+status:common+
+                   #alphaii
+                   no_target+status:no_target+common:no_target+
+                     status:common:no_target+
+                   #alphaij
+                   #1&2-way
+                   no_comp+status:no_comp+common:no_comp+common_comp:no_comp+
+                   #3-way
+                   status:common:no_comp+status:common_comp:no_comp+common:common_comp:no_comp+
+                   #4-way
+                   status:common:common_comp:no_comp+
+                   #random
+                   (1|family/spp_target)+(1|comb)+(1|pot)#+(1|family_comp/spp_comp)
+                   ,data=dat0%>%
+              filter(spp_comp!="Cot.cor",spp_target!="Cot.cor"))
+#4-way
+ricker_r1<-drop1(m.ricker.b,test="Chisq")[-c(1,2),]
+#3-way
+m.ricker.b_r2<-update(m.ricker.b,.~.-status:common:common_comp:no_comp)
+ricker_r2<-drop1(m.ricker.b_r2,test="Chisq")[-1,]
+#2-way
+m.ricker.b_r3<-update(m.ricker.b_r2,.~.-status:common:no_target-status:common:no_comp -
+                           status:no_comp:common_comp-common:no_comp:common_comp)
+ricker_r3<-drop1(m.ricker.b_r3,test="Chisq")[-1,]
+#main
+m.ricker.b_r4<-lmer(log(biomass)~status+common+ no_target+no_comp+
+                   #random
+                   (1|family/spp_target)+(1|comb)+(1|pot)#+(1|family_comp/spp_comp)
+                   ,data=dat0%>%
+              filter(spp_comp!="Cot.cor",spp_target!="Cot.cor"))
+ricker_r4<-drop1(m.ricker.b_r4,test="Chisq")[-1,]
+table_bio_ricker<-rbind(ricker_r4,ricker_r3,ricker_r2,ricker_r1)
+kable(table_bio_ricker,digits=3)
+```
+
+
+## normal, up to 3-ways
+all main, 2-ways and 3-ways interactions included\
+result: table_bio
+```{r biomass normal}
+m.number<-lmer(log(biomass)~status+common+common_comp+no_target+no_comp+
+            #two-way interactions
+            status:common+status:common_comp+status:no_target+status:no_comp+
+            common:common_comp+common:no_target+common:no_comp+
+            common_comp:no_target+common_comp:no_comp+
+             #if add no_target:no_comp
+              no_target:no_comp+
+            #three-way interactions
+            status:common:common_comp+status:common:no_target+status:common:no_comp+
+            status:common_comp:no_target+status:common_comp:no_comp+
+            common:common_comp:no_target+common:common_comp:no_comp+
+              #if add three-way no:target:no_comp
+              status:no_target:no_comp+common:no_target:no_comp+common_comp:no_target:no_comp+
+              #random
+            (1|family/spp_target)+(1|comb)+(1|pot)+(1|family_comp/spp_comp),data=dat0%>%
+              filter(spp_comp!="Cot.cor",spp_target!="Cot.cor"))
+
+
+
+#LRT test
+#r1, 3ways
+r1_a4<-drop1(m.number,test="Chisq")[-1,]
+#r2, 2ways
+m.number2<-lmer(log(biomass)~status+common+common_comp+no_target+no_comp+
+                 #two-way interactions
+                 status:common+status:common_comp+status:no_target+status:no_comp+
+                 common:common_comp+common:no_target+common:no_comp+
+                 common_comp:no_target+common_comp:no_comp+
+                  #
+                  no_target:no_comp+
+                                 #random
+                 (1|family/spp_target)+(1|comb)+(1|pot)+(1|family_comp/spp_comp),data=dat0%>%
+              filter(spp_comp!="Cot.cor",spp_target!="Cot.cor"))
+r2_a4<-drop1(m.number2,test="Chisq")[-1,]
+#r3, main
+m.number3<-lmer(log(biomass)~status+common+common_comp+no_target+no_comp+
+                                    #random
+                  (1|family/spp_target)+(1|comb)+(1|pot)+(1|family_comp/spp_comp),data=dat0%>%
+              filter(spp_comp!="Cot.cor",spp_target!="Cot.cor"))
+r3_a4<-drop1(m.number3,test="Chisq")[-1,]
+#LRT table
+table_bio<-rbind(r3_a4,r2_a4,r1_a4)
+kable(table_bio,digits=3)
+```
+
+
+# Ricker, use biomass instead of number of competitors
+The problem is that the relationship is non-linear (hump), therefore the data is not suitable for Ricker Model\
+not fixed yet
+```{r,eval=F}
+#total biomass per sp per pot
+dat.tb<-aggregate(biomass~spp_target+pot,data = dat0,FUN="sum")
+colnames(dat.tb)[3]<-"tb_target"
+#biomass of intra-species
+dat.k<-merge(dat0,dat.tb,by=c("pot","spp_target"))
+#biomass of inter-species
+dat.tb2<-dat.tb
+colnames(dat.tb2)[c(1,3)]<-c("spp_comp","tb_comp")
+dat.k<-merge(dat.k,dat.tb2,by=c("pot","spp_comp"),all.x=T)
+dat.k$tb_comp[is.na(dat.k$tb_comp)]<-0
+dat.k$biomass<-dat.k$biomass/1000
+dat.k$tb_comp<-dat.k$tb_comp/1000
+dat.k$tb_target<-dat.k$tb_target/1000
+#---------------#
+#!!!
+#remove the biomass of target or not
+dat.k$tb_target<-dat.k$tb_target-dat.k$biomass
+
+##
+#
+#parameterize
+table.alien.b<-as.data.frame(matrix(,0,5))
+
+table.native.b<-as.data.frame(matrix(,0,5))
+
+#use lmer, glmer
+#problem, residual plot reveal nonlinear relationship between fitted and resid
+pdf("ricker_resid_biomass.pdf")
+for (i in 1:48){
+  dat.i<-subset(dat.k,comb==i)
+  native.i<-subset(dat.i,status=="native")
+  alien.i<-subset(dat.i,status=="alien")
+  
+  m.native.i<-lme(log(biomass)~tb_target+tb_comp,random = ~1|pot,data=native.i,
+                  #weight=varIdent(form=~1|pot),
+                  #weights = varComb(varExp(form=~tb_comp),
+                  #                  varIdent(form=~1|pot)),
+                  #control=lmeControl(msMaxIter = 1000)
+                  #control=lmeControl(opt="optim")
+  )
+  m.alien.i<-lme(log(biomass)~tb_target+tb_comp,random = ~1|pot,data=alien.i,
+                 #weight=varIdent(form=~1|pot),
+                 #control=lmeControl(msMaxIter = 1000)
+  )
+  print(plot(m.native.i,xlab=paste(i,".native")))
+  print(plot(m.alien.i,xlab=paste(i,".alien")))
+  s.native.i<-summary(m.native.i)
+  s.alien.i<-summary(m.alien.i)
+  table.alien.b<-rbind(table.alien.b,s.alien.i$tTable)
+  table.native.b<-rbind(table.native.b,s.native.i$tTable)
+}
+
+
+dev.off()
+#table
+t.par.b<-rbind(table.alien.b,table.native.b)
+t.par.b$comb<-rep(rep(1:48,each=3),2)
+t.par.b$status<-rep(c("alien","native"),each=144)
+t.par.b$par<-rep(c("intercept","alphaii","alphaij"),96)
+#get common rare species info
+t.par.b<-merge(t.par.b,unique(dat0[,c(1,2,3,5,20:23)]),by=c("comb","status"))
+t.par.b$comb<-as.factor(t.par.b$comb)
+```
+
+
+# rudolf suggested
+use monoculture to calculate Ki, i.e. alphaii\
+use bi-culture to calculate alphaij*,\
+assume the total biomass reached to equilibrium, which I think is not fair assumption\
+```{r,eval=F}
+
+for (i in 1:nrow(dat.mean)){
+  if (dat.mean$freq_in[i]==1){
+    dat.mean$spp_comp[i]<-dat.mean$spp_target[i]
+    dat.mean$family_comp[i]<-dat.mean$family[i]
+  }
+}
+
+dat.mean$pair<-paste(dat.mean$spp_target,dat.mean$spp_comp,sep = "_")
+pair<-unique(dat.mean$pair)
+
+table8<-as.data.frame(matrix(,length(pair),3))
+names(table8)<-c("spp_target","spp_comp","tb")
+m.i$coefficients
+colnames(dat.i)
+
+for (i in 1:length(pair)){
+  pair.i<-pair[i]
+  dat.i<-filter(dat.mean,pair==pair.i)
+  m.i<-lm(tb~1,data=dat.i)
+  table8[i,1]<-paste(dat.i$spp_target[1])
+  table8[i,2]<-paste(dat.i$spp_comp[1])
+  table8[i,3]<-m.i$coefficients
+}
+
+
+```
+
+# optim
+use optim, same with Godoy 2014 ecology\
+I think ricker model is better in our system, because optim function is not so well developed, such that it can not control the non-independence of individual in the same pots.
+
+```{r,results=F}
+#exp(par[1])==growth rate at low frequency
+#exp(par[2])==intraspecific competition coefficient
+#exp(par[3])==inter
+
+
+#log normal distribution
+loglik <- function(data,par) {
+  with(data,-sum(log(1/(exp(par[4])))+log(1000/(biomass))-
+                   (log(biomass/1000)-log(((exp(par[1]))/(1+(par[2])*no_target+
+                                                       (par[3])*no_comp))))^2/(2*((exp(par[4]))^2))))
+}
+
+#normal distribution
+loglik <- function(data,par) {
+  with(data,-sum(log(1/(exp(par[4])))-
+                   (log(biomass/1000)-log(((exp(par[1]))/(1+(par[2])*no_target+
+                                                            (par[3])*no_comp))))^2/(2*((exp(par[4]))^2))))
+}
+```
+
+## analyze each combination (i.e. pair) separately
+for each species, we will get several intraspecific competition coefficients and lambda
+```{r,eval=F}
+form_alpha<-matrix(,48,8)
+form_alpha<-as.data.frame(form_alpha)
+
+rownames(form_alpha)<-1:48
+colnames(form_alpha)<-c("n_lambda","n_intra","a_on_n","n_convergence",
+                        "a_lambda","a_intra","n_on_a","a_convergence")
+
+form_alpha$comb<-1:48
+
+for (i in 1:48){
+  dat.i<-dat0[dat0$comb==i,]
+  native.i<-optim(par = c(0,0,0,0.1), loglik, data = dat.i[dat.i$status=="native",],control = list(maxit = 10000))
+  alien.i<-optim(par = c(0,0,0,0.1), loglik, data = dat.i[dat.i$status=="alien",],control = list(maxit = 10000))
+  form_alpha[i,1:3]<-native.i$par[1:3]
+  form_alpha[i,4]<-native.i$convergence[1]
+  form_alpha[i,5:7]<-alien.i$par[1:3]
+  form_alpha[i,8]<-alien.i$convergence[1]
+}
+
+
+
+a_species<-unique(dat0$alien)
+n_species<-unique(dat0$native)
+
+
+comb<-unique(lab[,c(1,4,5)])
+dat.co<-merge(form_alpha,comb,by="comb")
+
+
+dat.co<-merge(dat.co,sp_info,by.x="native",by.y="spp")
+colnames(dat.co)[12:13]<-c("n_family","n_common")
+dat.co<-merge(dat.co,sp_info,by.x="alien",by.y="spp")
+colnames(dat.co)[14:15]<-c("a_family","a_common")
+dat.co%>%
+  kable(digits=3)
+```
+
+## analyze global lambda and intraspecific competition
+then interspecific competition seperately
+form2 is the results
+```{r,results=F,warning=FALSE,eval=F}
+form2<-as.data.frame(matrix(,17,5))
+colnames(form2)<-c("spp_target","lambda","intra","inter","n_convergence")
+rownames(form2)<-1:17                        
+form2$spp_target<-unique(dat0$spp_target)
+spp<-unique(dat0$spp_target)
+
+
+#get lambda and alpha ii for each species, pool data for each species
+#
+Model<-function(a,b,c,no_target,no_comp){
+  log(exp(a)/(1+b*no_target+c*no_comp))
+}
+
+ModelGradient <- deriv(
+  body(Model)[[2]], 
+  namevec = c("a", "b", "c"), 
+  function.arg=Model
+)
+
+for (i in 1:length(spp)){
+dat.i<-dat0[dat0$spp_target==spp[i],]
+m.i<-nlmer(log(biomass/1000)~ModelGradient(a,b,c,no_target = no_target,no_comp = no_comp)~
+        (a|pot),
+      data=dat.i,
+      start=c(a=0,b=0,c=0),
+      nlmerControl(optCtrl=list(maxfun=10000))
+)
+t.i<-summary(m.i)
+form2[i,2:4]<-t.i$coefficients[1:3,1]
+}
+#add commonness info
+#add status info
+form2<-merge(form2,sp_info,by.x="spp_target",by.y="spp")
+status<-unique(dat0[,c(1,5)])
+form2<-merge(form2,status,by="spp_target")
+m.lambda<-lmer(lambda~common*status+(1|family),data=form2)
+m.intra<-lmer(intra~common*status+(1|family),data=form2)
+anova(m.lambda)
+anova(m.intra)
+
+```
+
+# survival analysis, normal one-step
+cbind way and 0-1 way showed same results\
+survival use initial number, some pots were not correctly transplanted\
+so density and frequency were corrected\
+use dat_1st, and 3-way interactions
+```{r data preparation}
+dat1.2<-dat_1st[,-6]
+dead_1st<-unique(dat1.2)
+#get survival and dead number data
+for (i in 1:nrow(dead_1st)){
+  if (dead_1st$status[i]=="alien"){
+    dead_1st$survival[i]<-dead_1st$n_alien[i]
+    dead_1st$dead[i]<-dead_1st$density_in[i]*dead_1st$freq_in[i]-dead_1st$n_alien[i]
+  } else {
+    dead_1st$survival[i]<-dead_1st$n_native[i]
+    dead_1st$dead[i]<-dead_1st$density_in[i]*dead_1st$freq_in[i]-dead_1st$n_native[i]
+  }
+}
+dat_death<-read.csv("survival.csv")
+#get final density for 2rd data
+for (i in 1537:nrow(dat_death)){
+  dat.i<-dat_death[dat_death$pot==dat_death$pot[i],]
+  dat_death$density[i]<-sum(dat.i$survival)
+}
+
+for (i in 1537:nrow(dat_death)){
+  if (dat_death$status[i]=="alien"){
+    dat_death$n_native[i]<-dat_death$density[i]-dat_death$n_alien[i]
+    dat_death$freq[i]<-dat_death$n_alien[i]/dat_death$density[i]
+  } else {
+    dat_death$n_alien[i]<-dat_death$density[i]-dat_death$n_native[i]
+    dat_death$freq[i]<-dat_death$n_native[i]/dat_death$density[i]
+  }
+}
+#remember to -1
+dat_death$no_target[dat_death$status=="alien"]<-
+  dat_death$density_in[dat_death$status=="alien"]*dat_death$freq_in[dat_death$status=="alien"]-1
+
+dat_death$no_target[dat_death$status=="native"]<-
+  dat_death$density_in[dat_death$status=="native"]*dat_death$freq_in[dat_death$status=="native"]-1
+
+dat_death$no_comp[dat_death$status=="alien"]<-
+  dat_death$density_in[dat_death$status=="alien"]*(1-dat_death$freq_in[dat_death$status=="alien"])
+dat_death$no_comp[dat_death$status=="native"]<-
+  dat_death$density_in[dat_death$status=="native"]*(1-dat_death$freq_in[dat_death$status=="native"])
+
+```
+
+## cbind
+result: table_s
+```{r,eval = FALSE}
+dat_death$obs<-seq(nrow(dat_death))
+#without glmercontrol, model will not converge.
+#bobyqa the best
+m.cbind<-glmer(cbind(survival,dead)~status*common*common_comp*freq_in+
+                 status*common*common_comp*density_in+
+                 status*common*freq_in*density_in+
+                 status*common_comp*freq_in*density_in+
+                 common*common_comp*freq_in*density_in-
+                 status:common:common_comp:freq_in-
+                 status:common:common_comp:density_in-
+                 status:common:freq_in:density_in-
+                 status:common_comp:freq_in:density_in-
+                 common:common_comp:freq_in:density_in+
+                 (1|family/spp_target)+(1|family_comp/spp_comp)+(1|pot)+(1|year),
+               glmerControl(optimizer ='bobyqa', optCtrl=list(maxfun=500000)),
+               #glmerControl(optimizer ='Nelder_Mead', optCtrl=list(maxfun=500000)),
+               #glmerControl(optimizer ='optimx', optCtrl=list(method='nlminb')),
+               #glmerControl(optimizer ='optimx', optCtrl=list(method='L-BFGS-B')),
+               family=binomial,data=dat_death)
+
+#round1
+r1_s<-drop1(m.cbind,test="Chisq")
+#round2
+m.cbind.2<-glmer(cbind(survival,dead)~status*common+status*common_comp+status*density_in+status*freq_in+
+                   common*common_comp+common*density_in+common*freq_in+
+                   common_comp*density_in+common_comp*freq_in+
+                   density_in*freq_in+
+                   (1|family/spp_target)+(1|comb)+(1|pot)+(1|year),
+                 glmerControl(optimizer ='bobyqa', optCtrl=list(maxfun=100000)),
+                 #glmerControl(optimizer ='Nelder_Mead', optCtrl=list(maxfun=500000)),
+                 #glmerControl(optimizer ='optimx', optCtrl=list(method='nlminb')),
+                 #glmerControl(optimizer ='optimx', optCtrl=list(method='L-BFGS-B')),
+                 family=binomial,data=dat_death)
+r2_s<-drop1(m.cbind.2,test="Chisq")
+
+#round3
+m.cbind.3<-glmer(cbind(survival,dead)~status+common+common_comp+density_in+freq_in+
+                   (1|family/spp_target)+(1|comb)+(1|pot)+(1|year),
+                 control=glmerControl(optimizer="bobyqa",optCtrl=list(maxfun=100000)),
+                 family=binomial,
+                 data=dat_death)
+
+
+
+r3_s<-drop1(m.cbind.3,test="Chisq")
+#table
+table_s<-rbind(r3_s,r2_s,r1_s)
+```
+
+
+## not cbind
+result: table_dead\
+It has higher power
+```{r,eval = FALSE}
+#at first, I used combination as one of the random effects, 
+#but convergence problem can't be solved
+#then, I used spp_comp/family_comp as one of the random effects,
+#it seems to work well
+#bobyqa is always needed
+
+#use dat_death
+dat_death$number<-dat_death$survival+dat_death$dead
+#pot+species level
+dat_death$pot_sp<-paste(dat_death$spp_target,dat_death$pot,sep="_")
+dat_death$block<-paste(dat_death$comb,dat_death$year,sep="_")
+#prepare for return to 0 1 data
+dat_death_bi<-dat_death[rep(row.names(dat_death),dat_death$number),]
+
+#code the 0 1 survival data,0=dead,1=survival
+pot_sp<-unique(dat_death_bi$pot_sp)
+
+for (i in 1:length(pot_sp)){
+  dead.no.i<-unique(dat_death_bi$dead[dat_death_bi$pot_sp==pot_sp[i]])
+  if (dead.no.i>0){
+    for (j in 1:dead.no.i){
+      dat_death_bi$death1[dat_death_bi$pot_sp==pot_sp[i]][j]<-0
+    }
+  }
+}
+
+
+#analysis
+#if random effects are (1|family/spp_target)+(1|comb)+(1|pot)+ (1|year), 
+#slight converge problems occur at round2, i.e. LRT in two-way interactions, max|grad|==0.0014etc problem,
+#but not severe
+
+##if random effects are (1|family/spp_target)+(1|family_comp/spp_comp)+(1|pot)+ (1|year), 
+#converge problems occur at round3, i.e. one-way effects
+#2: In checkConv(attr(opt, "derivs"), opt$par, ctrl = control$checkConv,  :
+#Model failed to converge: degenerate  Hessian with 1 negative eigenvalues
+
+
+dat_death_bi$obs<-seq(nrow(dat_death_bi))
+dat_death_bi$comb<-as.factor(dat_death_bi$comb)
+
+m<-glmer(death1~status*common*common_comp*freq_in+
+           status*common*common_comp*density_in+
+           status*common*freq_in*density_in+
+           status*common_comp*freq_in*density_in+
+           common*common_comp*freq_in*density_in-
+           status:common:common_comp:freq_in-
+           status:common:common_comp:density_in-
+           status:common:freq_in:density_in-
+           status:common_comp:freq_in:density_in-
+           common:common_comp:freq_in:density_in+
+           (1|family/spp_target)+(1|comb)+(1|pot)+ (1|year),
+         glmerControl(optimizer ='bobyqa', optCtrl=list(maxfun=500000)),
+         #glmerControl(optimizer ='Nelder_Mead', optCtrl=list(maxfun=500000)),
+         #glmerControl(optimizer ='optimx', optCtrl=list(method='nlminb')),
+         #glmerControl(optimizer ='optimx', optCtrl=list(method='L-BFGS-B')),
+         family=binomial,data=dat_death_bi)
+
+
+
+survival_wald<-summary(m)
+
+r1_dead<-drop1(m,test="Chisq")
+#r2
+m.2<-glmer(death1~status*common+status*common_comp+status*density_in+status*freq_in+
+             common*common_comp+common*density_in+common*freq_in+
+             common_comp*density_in+common_comp*freq_in+
+             density_in*freq_in+
+             (1|family/spp_target)+(1|comb)+(1|pot)+(1|year),
+           glmerControl(optimizer ='bobyqa', optCtrl=list(maxfun=100000)),
+           #glmerControl(optimizer ='Nelder_Mead', optCtrl=list(maxfun=500000)),
+           #glmerControl(optimizer ='optimx', optCtrl=list(method='nlminb')),
+           #glmerControl(optimizer ='optimx', optCtrl=list(method='L-BFGS-B')),
+           family=binomial,data=dat_death_bi)
+
+r2_dead<-drop1(m.2,test="Chisq")
+
+
+#converge warnings for the model m.test
+#Warning messages:
+#1: In checkConv(attr(opt, "derivs"), opt$par, ctrl = control$checkConv,  :
+#Model failed to converge with max|grad| = 0.00125597 (tol = 0.001, component 1)
+#2: In checkConv(attr(opt, "derivs"), opt$par, ctrl = control$checkConv,  :
+#Model failed to converge with max|grad| = 0.00122261 (tol = 0.001, component 1)
+#3: In checkConv(attr(opt, "derivs"), opt$par, ctrl = control$checkConv,  :
+#Model failed to converge with max|grad| = 0.00114144 (tol = 0.001, component 1)
+#4: In checkConv(attr(opt, "derivs"), opt$par, ctrl = control$checkConv,  :
+#Model failed to converge with max|grad| = 0.00134434 (tol = 0.001, component 1)
+#5: In checkConv(attr(opt, "derivs"), opt$par, ctrl = control$checkConv,  :
+#Model failed to converge with max|grad| =   0.00103046 (tol = 0.001, component 1)
+
+#r3
+#if with competitor random effects
+#2: In checkConv(attr(opt, "derivs"), opt$par, ctrl = control$checkConv,  :
+#Model failed to converge: degenerate  Hessian with 1 negative eigenvalues
+m.3<-glmer(death1~status+common+common_comp+density_in+freq_in+
+             (1|family/spp_target)+(1|comb)+(1|pot)+ (1|year),
+           glmerControl(optimizer ='bobyqa', optCtrl=list(maxfun=500000)),
+           #glmerControl(optimizer ='optimx', optCtrl=list(method='nlminb')),
+           family=binomial,data=dat_death_bi)
+
+
+r3_dead<-drop1(m.3,test="Chisq")
+
+
+table_dead<-rbind(r3_dead,r2_dead,r1_dead)
+
+```
+
+# survival analysis, ricker, one-step
+only use ricker model
+```{r survival ricker,eval = FALSE}
+#full model 
+m.death.number<-glmer(death1~#lambda
+                        status+common+status:common+
+                        #alphaii
+                        no_target+status:no_target+common:no_target+
+                        #3-way
+                        status:common:no_target+
+                        #if add common_comp
+                        #no_target:common_comp+no_target:common_comp:status+
+                        #alphaij
+                        #1&2-way
+                        no_comp+status:no_comp+common:no_comp+common_comp:no_comp+
+                        #3-way
+                        status:common:no_comp+status:common_comp:no_comp+common:common_comp:no_comp+
+                        #4-way
+                        status:common:common_comp:no_comp+
+                        #random
+                        (1|family/spp_target)+(1|comb)+(1|pot)+(1|family_comp/spp_comp),
+         glmerControl(optimizer ='bobyqa', optCtrl=list(maxfun=500000)),
+         #glmerControl(optimizer ='Nelder_Mead', optCtrl=list(maxfun=500000)),
+         #glmerControl(optimizer ='optimx', optCtrl=list(method='nlminb')),
+         #glmerControl(optimizer ='optimx', optCtrl=list(method='L-BFGS-B')),
+         family=binomial,data=dat_death_bi)
+
+```
+
+# biomass, one-step, frequency & density
+up to 3-ways interactions\
+result: table_b
+```{r,density and frequency,eval=F}
+#with family and species of competitor
+m.b1<-lmer(log(biomass)~status*common*common_comp*freq_in+
+                  status*common*common_comp*density_in+
+                  status*common*freq_in*density_in+
+                  status*common_comp*freq_in*density_in+
+                  common*common_comp*freq_in*density_in-
+                  status:common:common_comp:freq_in-
+                  status:common:common_comp:density_in-
+                  status:common:freq_in:density_in-
+                  status:common_comp:freq_in:density_in-
+                  common:common_comp:freq_in:density_in+
+                  (1|family/spp_target)+(1|comb)
+        +(1|pot),data=dat0)
+
+
+
+#r1
+r1_n<-drop1(m.b1,test="Chisq")[-1,]
+#r2
+m.b2<-lmer(log(biomass)~status*common+status*common_comp+status*density_in+status*freq_in+
+            common*common_comp+common*density_in+common*freq_in+
+            common_comp*density_in+common_comp*freq_in+
+            density_in*freq_in+
+            (1|family/spp_target)+(1|family_comp/spp_comp)+(1|comb)
+          +(1|pot),data=dat0)
+r2_n<-drop1(m.b2,test="Chisq")[-1,]
+#r3
+m.b3<-lmer(log(biomass)~status+common+common_comp+density_in+freq_in+
+            (1|family/spp_target)+(1|family_comp/spp_comp)+(1|comb)
+          +(1|pot),data=dat0)
+r3_n<-drop1(m.b3,test="Chisq")[-1,]
+table_b<-rbind(r3_n,r2_n,r1_n)
+kable(table_b,digits=3)
+```
